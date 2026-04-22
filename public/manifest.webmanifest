@@ -1,0 +1,18 @@
+{
+  "name": "Meraki · pedidos",
+  "short_name": "Meraki",
+  "description": "Carta y pedidos por mesa — Meraki beer company",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3e4c7",
+  "theme_color": "#3d291c",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

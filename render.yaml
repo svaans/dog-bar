@@ -1,0 +1,20 @@
+# Blueprint Render: https://render.com/docs/blueprint-spec
+# Ajusta el nombre del servicio y las variables en el panel si prefieres no versionar secretos aquí.
+
+services:
+  - type: web
+    name: meraki-dog-bar
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "22.14.0"
+      - key: NODE_ENV
+        value: production
+      # Definir en el panel (o sync desde secret store):
+      # STAFF_ORDER_KEY, NEXT_PUBLIC_APP_URL
+      # Si usas Supabase: ORDER_STORAGE, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
