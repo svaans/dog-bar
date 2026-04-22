@@ -188,6 +188,13 @@ const STAFF = {
     errAdminEmployees: "No se pudo guardar el empleado.",
     floorGridHint:
       "Toca el número de mesa para indicar que la atiendes; vuelve a tocarla para salir.",
+    floorMesaActionsTitle: "Mesa {n}",
+    floorMesaActionsBody:
+      "Puedes indicar que la atiendes (o salir) y también abrir el pedido de esa mesa si el cliente no escaneó el QR.",
+    floorActionAttend: "Atender esta mesa",
+    floorActionLeave: "Dejar de atender",
+    floorActionOpenOrder: "Hacer pedido para esta mesa",
+    floorActionClose: "Cerrar",
     floorShowAllMesas: "Ver mesas 41–99",
     floorShowFewerMesas: "Ver solo 1–40",
   },
@@ -375,6 +382,13 @@ const STAFF = {
     employeeCreatedOk: "Employee saved.",
     errAdminEmployees: "Could not save employee.",
     floorGridHint: "Tap a table number to cover it; tap again to leave.",
+    floorMesaActionsTitle: "Table {n}",
+    floorMesaActionsBody:
+      "You can claim (or leave) this table, and also open the order page if the guest did not scan the QR.",
+    floorActionAttend: "Cover this table",
+    floorActionLeave: "Stop covering",
+    floorActionOpenOrder: "Create order for this table",
+    floorActionClose: "Close",
     floorShowAllMesas: "Show tables 41–99",
     floorShowFewerMesas: "Show tables 1–40 only",
   },

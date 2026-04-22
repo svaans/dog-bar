@@ -3,6 +3,7 @@ import Link from "next/link";
 import QRCode from "qrcode";
 
 import { PrintButton } from "@/components/PrintButton";
+import { getMesaCount } from "@/lib/mesa-count";
 import { withAlternatesOg } from "@/lib/metadata-bilingual";
 import { qrPrintT } from "@/lib/qr-print-i18n";
 import { resolvePublicBaseUrl } from "@/lib/public-base-url";
@@ -17,9 +18,10 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const sp = await searchParams;
   const lang: UiLang = sp.lang === "en" ? "en" : "es";
+  const maxMesa = getMesaCount();
   const desde = Math.max(1, parseInt(sp.desde ?? "1", 10) || 1);
-  const hastaRaw = parseInt(sp.hasta ?? "20", 10) || 20;
-  const hasta = Math.min(99, Math.max(desde, hastaRaw));
+  const hastaRaw = parseInt(sp.hasta ?? String(maxMesa), 10) || maxMesa;
+  const hasta = Math.min(maxMesa, Math.max(desde, hastaRaw));
   const qsEs = new URLSearchParams();
   qsEs.set("desde", String(desde));
   qsEs.set("hasta", String(hasta));
@@ -54,9 +56,10 @@ function rangeQuery(desde: number, hasta: number, lang: UiLang) {
 export default async function ImpresionQrPage({ searchParams }: Props) {
   const sp = await searchParams;
   const lang: UiLang = sp.lang === "en" ? "en" : "es";
+  const maxMesa = getMesaCount();
   const desde = Math.max(1, parseInt(sp.desde ?? "1", 10) || 1);
-  const hastaRaw = parseInt(sp.hasta ?? "20", 10) || 20;
-  const hasta = Math.min(99, Math.max(desde, hastaRaw));
+  const hastaRaw = parseInt(sp.hasta ?? String(maxMesa), 10) || maxMesa;
+  const hasta = Math.min(maxMesa, Math.max(desde, hastaRaw));
   const base = await resolvePublicBaseUrl();
   const mesas = Array.from({ length: hasta - desde + 1 }, (_, i) => desde + i);
   const items = await Promise.all(

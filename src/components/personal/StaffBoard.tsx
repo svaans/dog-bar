@@ -19,6 +19,7 @@ import {
 } from "@/lib/staff-notification";
 import { playStaffBeep } from "@/lib/staff-beep";
 import { OrderPrintButton } from "@/components/personal/OrderPrintButton";
+import { getMesaCount } from "@/lib/mesa-count";
 import { formatHaceMinutos, orderAgeAccentClass } from "@/lib/relative-time";
 import { staffFill, staffT, type StaffUiKey } from "@/lib/staff-i18n";
 import { lineEmphasisClass, type StaffViewRole } from "@/lib/staff-roles";
@@ -94,6 +95,15 @@ function formatSyncAge(seconds: number, lang: UiLang): string {
   return staffFill(staffT("syncMinutesAgo", lang), { n: mins });
 }
 
+function formatDurationShort(ms: number, lang: UiLang): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  if (h > 0) return lang === "en" ? `${h}h ${m % 60}m` : `${h} h ${m % 60} min`;
+  if (m > 0) return lang === "en" ? `${m}m` : `${m} min`;
+  return lang === "en" ? `${s}s` : `${s} s`;
+}
+
 const STATUS_I18N: Record<OrderStatus, StaffUiKey> = {
   nuevo: "statusNuevo",
   preparando: "statusPreparando",
@@ -103,12 +113,14 @@ const STATUS_I18N: Record<OrderStatus, StaffUiKey> = {
 };
 
 export type StaffBoardVariant = "default" | "cocina" | "barra";
+export type StaffBoardModule = "sala" | "admin" | "cocina" | "barra";
 
 export type StaffBoardProps = {
   menuTabByItemId: Record<string, string>;
   /** Orden de pestañas de la carta (ids), para ticket impreso y coherencia. */
   menuTabOrder?: string[];
   variant?: StaffBoardVariant;
+  module?: StaffBoardModule;
   lang?: UiLang;
 };
 
@@ -116,9 +128,17 @@ export function StaffBoard({
   menuTabByItemId,
   menuTabOrder = [],
   variant = "default",
+  module,
   lang = "es",
 }: StaffBoardProps) {
   const pathname = usePathname() || "/personal";
+  const effectiveModule: StaffBoardModule =
+    module ??
+    (variant === "cocina" ? "cocina" : variant === "barra" ? "barra" : "sala");
+  const showHistory = effectiveModule === "admin";
+  const showEmployeeAdmin = effectiveModule === "admin";
+  const showFloor = effectiveModule === "sala";
+  const showOrders = effectiveModule === "admin" || effectiveModule === "cocina" || effectiveModule === "barra";
   const [key, setKey] = useState("");
   const [hydratedKey, setHydratedKey] = useState<string | null>(null);
   const [soundEnabled, setSoundEnabled] = useState(false);
@@ -151,7 +171,7 @@ export function StaffBoard({
     message: string;
   } | null>(null);
   const [compactFinger, setCompactFinger] = useState(false);
-  const [floorMesaInput, setFloorMesaInput] = useState("");
+  // (legacy) antes había input + botón; ahora usamos rejilla de mesas.
   const [staffAssignments, setStaffAssignments] = useState<StaffMesaAssignment[]>([]);
   const [floorAssignError, setFloorAssignError] = useState<string | null>(null);
   const [staffReportRows, setStaffReportRows] = useState<StaffDayReportRow[] | null>(null);
@@ -168,7 +188,9 @@ export function StaffBoard({
   const [empLoginNumber, setEmpLoginNumber] = useState("");
   const [empLoginPin, setEmpLoginPin] = useState("");
   const [empLoginErr, setEmpLoginErr] = useState<string | null>(null);
-  const [floorShowAllMesas, setFloorShowAllMesas] = useState(false);
+  const mesaCount = useMemo(() => getMesaCount(), []);
+  const [mesaActionOpen, setMesaActionOpen] = useState(false);
+  const [mesaActionMesa, setMesaActionMesa] = useState<number | null>(null);
 
   const bootstrapped = useRef(false);
   const seenOrderIds = useRef(new Set<string>());
@@ -324,9 +346,13 @@ export function StaffBoard({
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setFloorAssignError(
-        typeof data.error === "string" ? data.error : staffT("errLoadFloor", lang),
-      );
+      if (res.status === 401) {
+        setFloorAssignError(lang === "en" ? "Not authorized (team key)." : "No autorizado (clave de equipo).");
+      } else {
+        setFloorAssignError(
+          typeof data.error === "string" ? data.error : staffT("errLoadFloor", lang),
+        );
+      }
       return;
     }
     setFloorAssignError(null);
@@ -359,7 +385,6 @@ export function StaffBoard({
         return;
       }
       setFloorAssignError(null);
-      if (action === "join") setFloorMesaInput("");
       await fetchStaffAssignments();
     },
     [effectiveKey, employeeMe, staffName, lang, fetchStaffAssignments],
@@ -425,9 +450,10 @@ export function StaffBoard({
 
   const fetchAdminEmpList = useCallback(async () => {
     if (effectiveKey === null || !effectiveKey) return;
+    const adminKey = window.localStorage.getItem("meraki_admin_key")?.trim() || "";
     const r = await fetch("/api/admin/employees", {
       cache: "no-store",
-      headers: { "x-staff-key": effectiveKey },
+      headers: adminKey ? { "x-admin-key": adminKey } : {},
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) return;
@@ -885,10 +911,26 @@ export function StaffBoard({
     return staffName.trim().length > 0 && t === staffName.trim().toLowerCase();
   }
 
-  function onFloorMesaToggle(mesa: number) {
-    const row = staffAssignments.find((a) => a.mesa === mesa && isFloorMine(a.staffName));
-    if (row) void postFloorMesa("leave", mesa);
-    else void postFloorMesa("join", mesa);
+  function openMesaActions(mesa: number) {
+    setMesaActionMesa(mesa);
+    setMesaActionOpen(true);
+  }
+
+  async function attendMesaFromModal(mesa: number) {
+    await postFloorMesa("join", mesa);
+    setSuccessHint(lang === "en" ? `Table ${mesa} covered` : `Mesa ${mesa} atendida`);
+    setMesaActionOpen(false);
+  }
+
+  async function leaveMesaFromModal(mesa: number) {
+    await postFloorMesa("leave", mesa);
+    setSuccessHint(lang === "en" ? `Left table ${mesa}` : `Has salido de mesa ${mesa}`);
+    setMesaActionOpen(false);
+  }
+
+  function openOrderForMesa(mesa: number) {
+    const suffix = lang === "en" ? "?lang=en" : "";
+    window.open(`/mesa/${mesa}${suffix}`, "_blank", "noopener,noreferrer");
   }
 
   async function submitEmployeeLogin() {
@@ -952,7 +994,9 @@ export function StaffBoard({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-staff-key": effectiveKey,
+          ...(window.localStorage.getItem("meraki_admin_key")?.trim()
+            ? { "x-admin-key": window.localStorage.getItem("meraki_admin_key")!.trim() }
+            : {}),
         },
         body: JSON.stringify({
           employeeNumber: n,
@@ -989,7 +1033,9 @@ export function StaffBoard({
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        "x-staff-key": effectiveKey,
+        ...(window.localStorage.getItem("meraki_admin_key")?.trim()
+          ? { "x-admin-key": window.localStorage.getItem("meraki_admin_key")!.trim() }
+          : {}),
       },
       body: JSON.stringify({ active: false }),
     });
@@ -1197,8 +1243,8 @@ export function StaffBoard({
                     {staffT("employeeSettingsNeedLogin", lang)}
                   </p>
                 ) : null}
-                {variant === "default" ? (
-                <div className="mt-4 border-t border-[#e8cfa5] pt-4">
+                {showEmployeeAdmin ? (
+                  <div className="mt-4 border-t border-[#e8cfa5] pt-4">
                   <h3 className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
                     {staffT("employeeAdminTitle", lang)}
                   </h3>
@@ -1356,7 +1402,7 @@ export function StaffBoard({
 
       {!gateBlocked ? (
         <>
-      {variant === "default" ? (
+      {showHistory ? (
         <div className="flex flex-wrap gap-2 rounded-2xl bg-[#fff9ec]/90 p-2 shadow-sm ring-1 ring-[#e2c9a0]">
           {(
             [
@@ -1384,7 +1430,7 @@ export function StaffBoard({
         </div>
       )}
 
-      {variant === "default" && view === "historial" ? (
+      {showHistory && view === "historial" ? (
         <div className="flex flex-col gap-3 rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
           <div>
@@ -1472,140 +1518,204 @@ export function StaffBoard({
         </div>
       ) : null}
 
-      <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
-        <p className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
-          {staffT("mesaFilterTitle", lang)}
-        </p>
-        <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-          <input
-            type="text"
-            inputMode="numeric"
-            value={mesaFilter}
-            onChange={(e) => setMesaFilter(e.target.value)}
-            placeholder={staffT("mesaPlaceholder", lang)}
-            className="w-full max-w-xs rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
-          />
-          {filtersActive ? (
-            <button
-              type="button"
-              onClick={() => {
-                setMesaFilter("");
-                setActiveStatusFilter("todos");
-                setHistoryStatusFilter("todos");
-              }}
-              className="text-sm font-semibold text-[#c2763a] underline decoration-[#e2c9a0]"
-            >
-              {staffT("clearFilters", lang)}
-            </button>
-          ) : null}
+      {showOrders ? (
+        <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
+            {staffT("mesaFilterTitle", lang)}
+          </p>
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+            <input
+              type="text"
+              inputMode="numeric"
+              value={mesaFilter}
+              onChange={(e) => setMesaFilter(e.target.value)}
+              placeholder={staffT("mesaPlaceholder", lang)}
+              className="w-full max-w-xs rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+            />
+            {filtersActive ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setMesaFilter("");
+                  setActiveStatusFilter("todos");
+                  setHistoryStatusFilter("todos");
+                }}
+                className="text-sm font-semibold text-[#c2763a] underline decoration-[#e2c9a0]"
+              >
+                {staffT("clearFilters", lang)}
+              </button>
+            ) : null}
+          </div>
         </div>
-      </div>
+      ) : null}
 
-      {variant === "default" && hasSavedKey ? (
+      {showFloor && hasSavedKey ? (
         <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
           <h3 className="font-serif text-base font-semibold text-[#2c1f14]">
             {staffT("floorBlockTitle", lang)}
           </h3>
-          <p className="mt-2 text-xs text-[#6b5138]">
-            {employeeMe ? staffT("floorGridHint", lang) : staffT("floorBlockBody", lang)}
-          </p>
+          <p className="mt-2 text-xs text-[#6b5138]">{staffT("floorGridHint", lang)}</p>
           <p className="mt-2 text-xs text-[#5c432e]">{staffT("floorHeartbeatNote", lang)}</p>
-          {employeeMe ? (
-            <>
-              <div className="mt-3 grid grid-cols-5 gap-2 sm:grid-cols-8 md:grid-cols-10">
-                {Array.from({ length: floorShowAllMesas ? 99 : 40 }, (_, i) => i + 1).map((m) => {
-                  const mineRow = staffAssignments.some(
-                    (a) => a.mesa === m && isFloorMine(a.staffName),
-                  );
+
+          {(() => {
+            const maxMesa = mesaCount;
+            const coveredCount = new Set(staffAssignments.map((a) => a.mesa)).size;
+            const coveredInRange = new Set(
+              staffAssignments.filter((a) => a.mesa >= 1 && a.mesa <= maxMesa).map((a) => a.mesa),
+            ).size;
+            const freeInRange = maxMesa - coveredInRange;
+            return (
+              <p className="mt-2 text-xs text-[#6b5138]">
+                <span className="font-semibold text-[#3d291c]">
+                  {coveredInRange}
+                </span>{" "}
+                atendidas ·{" "}
+                <span className="font-semibold text-[#3d291c]">{freeInRange}</span> libres
+                {coveredCount > coveredInRange
+                  ? " · (hay mesas atendidas fuera del rango visible)"
+                  : ""}
+              </p>
+            );
+          })()}
+
+          <div className="mt-3 grid grid-cols-4 gap-2 sm:grid-cols-8 md:grid-cols-10">
+            {Array.from({ length: mesaCount }, (_, i) => i + 1).map((m) => {
+              const rows = staffAssignments
+                .filter((a) => a.mesa === m)
+                .sort((a, b) => a.staffName.localeCompare(b.staffName));
+              const mine = rows.some((r) => isFloorMine(r.staffName));
+              const isCovered = rows.length > 0;
+              const primaryJoinedAt = rows.length
+                ? Math.min(
+                    ...rows
+                      .map((r) => new Date(r.joinedAt).getTime())
+                      .filter((t) => Number.isFinite(t)),
+                  )
+                : NaN;
+              const dur = Number.isFinite(primaryJoinedAt)
+                ? formatDurationShort(nowTick - primaryJoinedAt, lang)
+                : null;
+              const label =
+                rows.length === 0
+                  ? null
+                  : rows.length === 1
+                    ? rows[0].staffName
+                    : `${rows[0].staffName} +${rows.length - 1}`;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => openMesaActions(m)}
+                  className={`group rounded-xl px-2 py-2 text-left transition ring-1 ${
+                    mine
+                      ? "bg-[#2f7a4a] text-white ring-[#276642]"
+                      : isCovered
+                        ? "bg-white text-[#3d291c] ring-[#d8bf9a] hover:bg-[#fff3da]"
+                        : "bg-[#fff3da] text-[#3d291c] ring-[#e2c9a0] hover:bg-[#ffe8c4]"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-base font-bold tabular-nums">{m}</span>
+                    {mine ? (
+                      <span className="text-[10px] font-semibold uppercase tracking-wide opacity-90">
+                        yo
+                      </span>
+                    ) : null}
+                  </div>
+                  <div
+                    className={`mt-1 line-clamp-1 text-[11px] ${
+                      mine ? "text-white/90" : "text-[#6b5138]"
+                    }`}
+                    title={rows.map((r) => r.staffName).join(", ")}
+                  >
+                    {label ?? "—"}
+                    {dur ? ` · ${dur}` : ""}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {mesaActionOpen && mesaActionMesa !== null ? (
+            <div
+              className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+              role="dialog"
+              aria-modal="true"
+              onClick={() => setMesaActionOpen(false)}
+            >
+              <div
+                className="w-full max-w-md rounded-2xl bg-[#fff9ec] p-4 shadow-lg ring-1 ring-[#e2c9a0]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h3 className="font-serif text-lg font-semibold text-[#2c1f14]">
+                  {staffFill(staffT("floorMesaActionsTitle", lang), { n: String(mesaActionMesa) })}
+                </h3>
+                <p className="mt-1 text-sm text-[#5c432e]">
+                  {staffT("floorMesaActionsBody", lang)}
+                </p>
+
+                {(() => {
+                  const rows = staffAssignments.filter((a) => a.mesa === mesaActionMesa);
+                  const mine = rows.some((r) => isFloorMine(r.staffName));
+                  const who = rows.length
+                    ? rows.map((r) => r.staffName).sort((a, b) => a.localeCompare(b)).join(", ")
+                    : (lang === "en" ? "Free" : "Libre");
                   return (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => onFloorMesaToggle(m)}
-                      className={`rounded-xl py-2 text-sm font-semibold tabular-nums transition ring-1 ${
-                        mineRow
-                          ? "bg-[#2f7a4a] text-white ring-[#276642]"
-                          : "bg-white text-[#3d291c] ring-[#e2c9a0] hover:bg-[#fff3da]"
-                      }`}
-                    >
-                      {m}
-                    </button>
+                    <p className="mt-3 text-sm text-[#3d291c]">
+                      <span className="font-semibold">{lang === "en" ? "Current:" : "Ahora:"}</span>{" "}
+                      {who}
+                      {mine ? (lang === "en" ? " (you)" : " (tú)") : ""}
+                    </p>
                   );
-                })}
+                })()}
+
+                <div className="mt-4 flex flex-col gap-2">
+                  {staffAssignments.some((a) => a.mesa === mesaActionMesa && isFloorMine(a.staffName)) ? (
+                    <button
+                      type="button"
+                      onClick={() => void leaveMesaFromModal(mesaActionMesa)}
+                      className="rounded-full border border-[#c4a574] bg-white px-4 py-2 text-sm font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+                    >
+                      {staffT("floorActionLeave", lang)}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void attendMesaFromModal(mesaActionMesa)}
+                      className="rounded-full bg-[#2f7a4a] px-4 py-2 text-sm font-semibold text-white hover:bg-[#276642]"
+                    >
+                      {staffT("floorActionAttend", lang)}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => openOrderForMesa(mesaActionMesa)}
+                    className="rounded-full bg-[#3d291c] px-4 py-2 text-sm font-semibold text-[#f6ead3] hover:bg-[#2c1f14]"
+                  >
+                    {staffT("floorActionOpenOrder", lang)}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMesaActionOpen(false)}
+                    className="rounded-full border border-[#d8bf9a] bg-transparent px-4 py-2 text-sm font-semibold text-[#5c432e] hover:bg-white/60"
+                  >
+                    {staffT("floorActionClose", lang)}
+                  </button>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setFloorShowAllMesas((v) => !v)}
-                className="mt-2 text-xs font-semibold text-[#c2763a] underline decoration-[#e2c9a0]"
-              >
-                {floorShowAllMesas
-                  ? staffT("floorShowFewerMesas", lang)
-                  : staffT("floorShowAllMesas", lang)}
-              </button>
-            </>
-          ) : (
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-              <input
-                type="text"
-                inputMode="numeric"
-                value={floorMesaInput}
-                onChange={(e) => setFloorMesaInput(e.target.value)}
-                placeholder={staffT("floorMesaPlaceholder", lang)}
-                className="w-full max-w-[8rem] rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  const m = parseInt(floorMesaInput.trim(), 10);
-                  if (!Number.isFinite(m) || m < 1 || m > 99) {
-                    setFloorAssignError(staffT("errInvalidMesa", lang));
-                    return;
-                  }
-                  void postFloorMesa("join", m);
-                }}
-                className="rounded-full bg-[#3d291c] px-4 py-2 text-sm font-semibold text-[#f6ead3] hover:bg-[#2c1f14]"
-              >
-                {staffT("floorJoinBtn", lang)}
-              </button>
             </div>
-          )}
+          ) : null}
+
           {floorAssignError ? (
             <p className="mt-2 text-xs font-medium text-red-800">{floorAssignError}</p>
           ) : null}
           {staffAssignments.length === 0 ? (
             <p className="mt-3 text-sm text-[#6b5138]">{staffT("floorNobody", lang)}</p>
-          ) : (
-            <ul className="mt-3 flex flex-col gap-2 text-sm text-[#3d291c]">
-              {[...staffAssignments]
-                .sort((a, b) => a.mesa - b.mesa || a.staffName.localeCompare(b.staffName))
-                .map((a) => {
-                  const mine = isFloorMine(a.staffName);
-                  return (
-                    <li
-                      key={`${a.mesa}-${a.staffName}-${a.updatedAt}`}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/80 px-3 py-2 ring-1 ring-[#ead4b2]"
-                    >
-                      <span>
-                        {staffT("tableWord", lang)} {a.mesa} · {a.staffName}
-                      </span>
-                      {mine ? (
-                        <button
-                          type="button"
-                          onClick={() => void postFloorMesa("leave", a.mesa)}
-                          className="rounded-full border border-[#c4a574] bg-white px-3 py-1 text-xs font-semibold text-[#3d291c] hover:bg-[#fff3da]"
-                        >
-                          {staffT("floorLeaveBtn", lang)}
-                        </button>
-                      ) : null}
-                    </li>
-                  );
-                })}
-            </ul>
-          )}
+          ) : null}
         </div>
       ) : null}
 
-      {view === "activos" ? (
+      {showOrders && view === "activos" ? (
         <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
           <p className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
             {staffT("queueTitle", lang)}
@@ -1641,7 +1751,7 @@ export function StaffBoard({
             ))}
           </div>
         </div>
-      ) : (
+      ) : showOrders ? (
         <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
           <p className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
             {staffT("historyStatusTitle", lang)}
@@ -1663,7 +1773,7 @@ export function StaffBoard({
             ))}
           </div>
         </div>
-      )}
+      ) : null}
 
       {!hasSavedKey && variant === "default" ? (
         <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
@@ -1824,7 +1934,7 @@ export function StaffBoard({
         </div>
       ) : null}
 
-      {variant === "default" && view === "historial" && hasSavedKey ? (
+      {showHistory && view === "historial" && hasSavedKey ? (
         <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
           <h3 className="font-serif text-base font-semibold text-[#2c1f14]">
             {staffT("dayStaffReportTitle", lang)}
@@ -1889,14 +1999,15 @@ export function StaffBoard({
         </div>
       ) : null}
 
-      {!displayed.length ? (
-        <p className="text-center text-sm text-[#6b5138]">
-          {view === "activos" ? staffT("emptyActive", lang) : staffT("emptyDay", lang)}
-        </p>
-      ) : !visibleOrders.length ? (
-        <p className="text-center text-sm text-[#6b5138]">{staffT("emptyFiltered", lang)}</p>
-      ) : (
-        <ul className="space-y-3">
+      {showOrders ? (
+        !displayed.length ? (
+          <p className="text-center text-sm text-[#6b5138]">
+            {view === "activos" ? staffT("emptyActive", lang) : staffT("emptyDay", lang)}
+          </p>
+        ) : !visibleOrders.length ? (
+          <p className="text-center text-sm text-[#6b5138]">{staffT("emptyFiltered", lang)}</p>
+        ) : (
+          <ul className="space-y-3">
           {visibleOrders.map((o) => {
             const stats = orderLineStats(o);
             return (
@@ -2084,8 +2195,9 @@ export function StaffBoard({
             </li>
             );
           })}
-        </ul>
-      )}
+          </ul>
+        )
+      ) : null}
         </>
       ) : null}
     </div>

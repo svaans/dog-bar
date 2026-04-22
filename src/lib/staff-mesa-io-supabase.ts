@@ -33,7 +33,7 @@ export async function readAssignmentsSupabase(): Promise<StaffMesaAssignment[]> 
   const supabase = getClient();
   const { data, error } = await supabase
     .from(TABLE)
-    .select("mesa,staff_name,updated_at")
+    .select("mesa,staff_name,joined_at,updated_at")
     .order("updated_at", { ascending: false });
   if (error) {
     throw new Error("No se pudieron leer las asignaciones de mesa.");
@@ -41,6 +41,7 @@ export async function readAssignmentsSupabase(): Promise<StaffMesaAssignment[]> 
   return (data ?? []).map((r) => ({
     mesa: Number(r.mesa),
     staffName: String(r.staff_name),
+    joinedAt: String((r as { joined_at?: string | null }).joined_at ?? r.updated_at),
     updatedAt: String(r.updated_at),
   }));
 }
@@ -51,6 +52,7 @@ export async function upsertAssignmentSupabase(row: StaffMesaAssignment): Promis
     {
       mesa: row.mesa,
       staff_name: row.staffName,
+      joined_at: row.joinedAt,
       updated_at: row.updatedAt,
     },
     { onConflict: "mesa,staff_name" },

@@ -24,18 +24,30 @@ export async function listStaffMesaAssignmentsFresh(): Promise<StaffMesaAssignme
 export async function joinStaffMesa(mesa: number, staffName: string): Promise<void> {
   const trimmed = staffName.trim().slice(0, 80);
   if (!trimmed) throw new Error("Nombre vacío");
-  const row: StaffMesaAssignment = {
-    mesa,
-    staffName: trimmed,
-    updatedAt: new Date().toISOString(),
-  };
+  const nowIso = new Date().toISOString();
   if (getOrderStorageMode() === "supabase") {
+    // Preservar joinedAt si ya existía.
+    const existing = (await supabaseIo.readAssignmentsSupabase()).find(
+      (x) => x.mesa === mesa && x.staffName === trimmed,
+    );
+    const row: StaffMesaAssignment = {
+      mesa,
+      staffName: trimmed,
+      joinedAt: existing?.joinedAt ?? nowIso,
+      updatedAt: nowIso,
+    };
     await supabaseIo.upsertAssignmentSupabase(row);
     return;
   }
   const all = jsonIo.readAssignmentsJson();
+  const prev = all.find((x) => x.mesa === mesa && x.staffName === trimmed);
   const next = all.filter((x) => !(x.mesa === mesa && x.staffName === trimmed));
-  next.push(row);
+  next.push({
+    mesa,
+    staffName: trimmed,
+    joinedAt: prev?.joinedAt ?? nowIso,
+    updatedAt: nowIso,
+  });
   jsonIo.writeAssignmentsJson(next);
 }
 

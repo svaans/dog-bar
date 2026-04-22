@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 
-import { StaffBoard } from "@/components/personal/StaffBoard";
-import { buildTabIdMap } from "@/lib/menu-tab-map";
-import { getMenuTabs } from "@/lib/menu-loader";
 import { staffT } from "@/lib/staff-i18n";
 import { withAlternatesOg } from "@/lib/metadata-bilingual";
 import type { UiLang } from "@/lib/ui-i18n";
@@ -28,9 +25,6 @@ export default async function PersonalPage({
 }) {
   const sp = await searchParams;
   const lang: UiLang = sp.lang === "en" ? "en" : "es";
-  const menuTabs = getMenuTabs();
-  const menuTabByItemId = buildTabIdMap(menuTabs);
-  const menuTabOrder = menuTabs.map((t) => t.id);
   const suffix = `?lang=${lang}`;
 
   return (
@@ -60,29 +54,49 @@ export default async function PersonalPage({
           </div>
         </div>
         <p className="mt-2 text-sm text-[#5c432e]">
-          {staffT("personalPageLead", lang)}{" "}
-          <a className="font-medium underline" href={`/personal/cocina${suffix}`}>
-            {staffT("personalShortcutKitchen", lang)}
-          </a>{" "}
-          ·{" "}
-          <a className="font-medium underline" href={`/personal/barra${suffix}`}>
-            {staffT("personalShortcutBar", lang)}
-          </a>
-          .
+          Elige el módulo del equipo:
         </p>
       </header>
-      <Suspense
-        fallback={
-          <p className="text-sm text-[#5c432e]">{staffT("personalPreparePanel", lang)}</p>
-        }
-      >
-        <StaffBoard
-          menuTabByItemId={menuTabByItemId}
-          menuTabOrder={menuTabOrder}
-          variant="default"
-          lang={lang}
-        />
-      </Suspense>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <a
+          href={`/personal/sala${suffix}`}
+          className="rounded-2xl bg-[#fff9ec]/90 p-5 shadow-sm ring-1 ring-[#e2c9a0] hover:bg-[#fff3da]"
+        >
+          <h2 className="font-serif text-xl font-semibold text-[#2c1f14]">Sala · Mesero</h2>
+          <p className="mt-2 text-sm text-[#5c432e]">
+            Mesas en rejilla, asignación con un toque y vista rápida de quién cubre qué.
+          </p>
+        </a>
+        <a
+          href={`/personal/cocina${suffix}`}
+          className="rounded-2xl bg-[#fff9ec]/90 p-5 shadow-sm ring-1 ring-[#e2c9a0] hover:bg-[#fff3da]"
+        >
+          <h2 className="font-serif text-xl font-semibold text-[#2c1f14]">
+            {staffT("personalShortcutKitchen", lang)}
+          </h2>
+          <p className="mt-2 text-sm text-[#5c432e]">
+            Cola de pedidos para cocina (solo lo que toca cocina).
+          </p>
+        </a>
+        <a
+          href={`/personal/barra${suffix}`}
+          className="rounded-2xl bg-[#fff9ec]/90 p-5 shadow-sm ring-1 ring-[#e2c9a0] hover:bg-[#fff3da]"
+        >
+          <h2 className="font-serif text-xl font-semibold text-[#2c1f14]">
+            {staffT("personalShortcutBar", lang)}
+          </h2>
+          <p className="mt-2 text-sm text-[#5c432e]">Cola de pedidos para barra/sala.</p>
+        </a>
+        <a
+          href={`/personal/admin${suffix}`}
+          className="rounded-2xl bg-[#2c1f14] p-5 text-[#f6ead3] shadow-sm ring-1 ring-[#1a120c] hover:bg-[#3d291c]"
+        >
+          <h2 className="font-serif text-xl font-semibold text-[#fff9ec]">Admin</h2>
+          <p className="mt-2 text-sm text-[#f0e4cf]">
+            Empleados (PIN), historial del día, exportaciones e informes.
+          </p>
+        </a>
+      </div>
     </div>
   );
 }

@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server";
 
+import { adminKeyMatches, getAdminProvidedKey } from "@/lib/admin-auth";
 import { jsonErrorFromException } from "@/lib/api-error-response";
 import { createEmployee, listEmployeesForAdminWithActive } from "@/lib/employees-store";
-import { getStaffProvidedKey } from "@/lib/staff-request";
-import { staffKeyMatches } from "@/lib/staff-auth";
 
 export const runtime = "nodejs";
 
 export async function GET(req: Request) {
-  if (!staffKeyMatches(getStaffProvidedKey(req))) {
+  if (!adminKeyMatches(getAdminProvidedKey(req))) {
     return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   }
   try {
@@ -20,7 +19,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  if (!staffKeyMatches(getStaffProvidedKey(req))) {
+  if (!adminKeyMatches(getAdminProvidedKey(req))) {
     return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   }
   let body: unknown;
