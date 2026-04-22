@@ -922,9 +922,44 @@ export function StaffBoard({
     setMesaActionOpen(false);
   }
 
+  async function closeAccountForMesa(mesa: number): Promise<number | null> {
+    if (effectiveKey === null || !effectiveKey) return null;
+    const res = await fetch("/api/orders/close-mesa", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-staff-key": effectiveKey,
+      },
+      body: JSON.stringify({ mesa, confirm: "CERRAR_MESA" }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setFloorAssignError(
+        typeof data.error === "string"
+          ? data.error
+          : (lang === "en" ? "Could not close table bill." : "No se pudo cerrar la cuenta."),
+      );
+      return null;
+    }
+    return typeof data.knownTotalEuros === "number" ? data.knownTotalEuros : 0;
+  }
+
   async function leaveMesaFromModal(mesa: number) {
+    const total = await closeAccountForMesa(mesa);
     await postFloorMesa("leave", mesa);
-    setSuccessHint(lang === "en" ? `Left table ${mesa}` : `Has salido de mesa ${mesa}`);
+    if (total !== null) {
+      const money = total.toLocaleString(lang === "en" ? "en-GB" : "es-ES", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+      setSuccessHint(
+        lang === "en"
+          ? `Bill closed (€${money}). Table ${mesa} is free.`
+          : `Cuenta cerrada (${money} €). Mesa ${mesa} libre.`,
+      );
+    } else {
+      setSuccessHint(lang === "en" ? `Left table ${mesa}` : `Has salido de mesa ${mesa}`);
+    }
     setMesaActionOpen(false);
   }
 
@@ -932,6 +967,49 @@ export function StaffBoard({
     const suffix = lang === "en" ? "?lang=en" : "";
     window.open(`/mesa/${mesa}${suffix}`, "_blank", "noopener,noreferrer");
   }
+
+  const myMesas = useMemo(() => {
+    const label = (employeeMe?.displayName ?? staffName).trim().toLowerCase();
+    if (!label) return [];
+    return [...new Set(staffAssignments.filter((a) => a.staffName.trim().toLowerCase() === label).map((a) => a.mesa))]
+      .sort((a, b) => a - b);
+  }, [staffAssignments, employeeMe, staffName]);
+
+  const [mesaAccounts, setMesaAccounts] = useState<Record<number, { knownTotalEuros: number; orderCount: number }>>({});
+
+  const fetchMesaAccount = useCallback(
+    async (mesa: number) => {
+      if (effectiveKey === null || !effectiveKey) return;
+      const qs = new URLSearchParams({ mesa: String(mesa) });
+      const res = await fetch(`/api/orders/mesa-account?${qs}`, {
+        cache: "no-store",
+        headers: { "x-staff-key": effectiveKey },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+      const knownTotalEuros = typeof data.knownTotalEuros === "number" ? data.knownTotalEuros : 0;
+      const orderCount = typeof data.orderCount === "number" ? data.orderCount : 0;
+      setMesaAccounts((prev) => ({ ...prev, [mesa]: { knownTotalEuros, orderCount } }));
+    },
+    [effectiveKey],
+  );
+
+  useEffect(() => {
+    if (!showFloor || effectiveKey === null || !effectiveKey) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      for (const m of myMesas) {
+        await fetchMesaAccount(m);
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [showFloor, effectiveKey, myMesas, fetchMesaAccount]);
 
   async function submitEmployeeLogin() {
     if (effectiveKey === null || !effectiveKey) return;
@@ -1670,14 +1748,55 @@ export function StaffBoard({
                 })()}
 
                 <div className="mt-4 flex flex-col gap-2">
+                  <div className="rounded-xl bg-white/70 px-3 py-2 text-sm text-[#3d291c] ring-1 ring-[#ead4b2]">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
+                      {staffT("floorAccountLabel", lang)}
+                    </span>
+                    <span className="ml-2 tabular-nums font-semibold text-[#2f7a4a]">
+                      {(() => {
+                        const acc = mesaAccounts[mesaActionMesa];
+                        const v = acc?.knownTotalEuros ?? 0;
+                        return v.toLocaleString(lang === "en" ? "en-GB" : "es-ES", {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        });
+                      })()}{" "}
+                      €
+                    </span>
+                  </div>
+
                   {staffAssignments.some((a) => a.mesa === mesaActionMesa && isFloorMine(a.staffName)) ? (
-                    <button
-                      type="button"
-                      onClick={() => void leaveMesaFromModal(mesaActionMesa)}
-                      className="rounded-full border border-[#c4a574] bg-white px-4 py-2 text-sm font-semibold text-[#3d291c] hover:bg-[#fff3da]"
-                    >
-                      {staffT("floorActionLeave", lang)}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void leaveMesaFromModal(mesaActionMesa)}
+                        className="rounded-full border border-[#c4a574] bg-white px-4 py-2 text-sm font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+                      >
+                        {staffT("floorActionLeave", lang)}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void (async () => {
+                          const total = await closeAccountForMesa(mesaActionMesa);
+                          if (total !== null) {
+                            const money = total.toLocaleString(lang === "en" ? "en-GB" : "es-ES", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            });
+                            setSuccessHint(
+                              lang === "en"
+                                ? `Bill closed (€${money}). Table ${mesaActionMesa} is free.`
+                                : `Cuenta cerrada (${money} €). Mesa ${mesaActionMesa} libre.`,
+                            );
+                            await fetchStaffAssignments();
+                            setMesaActionOpen(false);
+                          }
+                        })()}
+                        className="rounded-full bg-[#7a2f2f] px-4 py-2 text-sm font-semibold text-white hover:bg-[#631f1f]"
+                      >
+                        {staffT("floorActionCloseAndFree", lang)}
+                      </button>
+                    </>
                   ) : (
                     <button
                       type="button"
@@ -1712,6 +1831,57 @@ export function StaffBoard({
           {staffAssignments.length === 0 ? (
             <p className="mt-3 text-sm text-[#6b5138]">{staffT("floorNobody", lang)}</p>
           ) : null}
+        </div>
+      ) : null}
+
+      {showFloor && hasSavedKey && myMesas.length > 0 ? (
+        <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
+          <h3 className="font-serif text-base font-semibold text-[#2c1f14]">
+            {staffT("floorMyTablesTitle", lang)}
+          </h3>
+          <ul className="mt-3 space-y-2 text-sm text-[#3d291c]">
+            {myMesas.map((m) => {
+              const acc = mesaAccounts[m];
+              const money = (acc?.knownTotalEuros ?? 0).toLocaleString(lang === "en" ? "en-GB" : "es-ES", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              });
+              return (
+                <li
+                  key={m}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/80 px-3 py-2 ring-1 ring-[#ead4b2]"
+                >
+                  <span className="font-medium">
+                    {staffT("tableWord", lang)} <span className="tabular-nums">{m}</span>
+                  </span>
+                  <span className="tabular-nums font-semibold text-[#2f7a4a]">
+                    {money} €
+                    {acc ? (
+                      <span className="ml-2 text-xs font-normal text-[#6b5138]">
+                        ({acc.orderCount})
+                      </span>
+                    ) : null}
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => openMesaActions(m)}
+                      className="rounded-full border border-[#c4a574] bg-white px-3 py-1 text-xs font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+                    >
+                      {lang === "en" ? "Actions" : "Acciones"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openOrderForMesa(m)}
+                      className="rounded-full border border-[#3d291c] bg-[#3d291c] px-3 py-1 text-xs font-semibold text-[#f6ead3] hover:bg-[#2c1f14]"
+                    >
+                      {staffT("floorActionOpenOrder", lang)}
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       ) : null}
 
