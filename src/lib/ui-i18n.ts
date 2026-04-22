@@ -51,6 +51,21 @@ const MESA: Record<UiLang, Record<string, string>> = {
     metaPageTitle: "Pedir · Mesa {n}",
     metaPageDescription:
       "Carta digital y pedido a cocina/barra — Meraki beer company, pet friendly.",
+    addedToOrder: "Listo: «{name}» va a tu pedido de mesa.",
+    addedMoreOf: "Hecho: «{name}» ahora x{n} en tu pedido.",
+    mesaStateFree: "Mesa libre",
+    mesaStateBusy: "Mesa con pedido activo",
+    mesaBusyHint:
+      "Hay un pedido en cocina para esta mesa. Puedes verlo cuando quieras hasta que lo marquen entregado o cancelado.",
+    viewOrderBtn: "Ver pedido enviado",
+    closePanel: "Cerrar",
+    orderInKitchenTitle: "Pedido en cocina / barra",
+    stNuevo: "Recibido",
+    stPreparando: "Preparando",
+    stListo: "Listo para servir",
+    stEntregado: "Entregado",
+    stCancelado: "Cancelado",
+    viewOrderFromSuccess: "Ver estado del pedido",
   },
   en: {
     petFriendly: "Pet friendly",
@@ -102,11 +117,35 @@ const MESA: Record<UiLang, Record<string, string>> = {
     metaPageTitle: "Order · Table {n}",
     metaPageDescription:
       "Digital menu and order to kitchen/bar — Meraki beer company, pet friendly.",
+    addedToOrder: "Done: «{name}» added to your table order.",
+    addedMoreOf: "Done: «{name}» is now x{n} in your order.",
+    mesaStateFree: "Table free",
+    mesaStateBusy: "Order in progress",
+    mesaBusyHint:
+      "There is an active order for this table. You can review it until it is marked delivered or cancelled.",
+    viewOrderBtn: "View sent order",
+    closePanel: "Close",
+    orderInKitchenTitle: "Order with kitchen / bar",
+    stNuevo: "Received",
+    stPreparando: "In progress",
+    stListo: "Ready to serve",
+    stEntregado: "Delivered",
+    stCancelado: "Cancelled",
+    viewOrderFromSuccess: "View order status",
   },
 };
 
 export function mesaT(key: keyof typeof MESA.es, lang: UiLang): string {
   return MESA[lang][key] ?? MESA.es[key] ?? key;
+}
+
+export function mesaFill(
+  template: string,
+  vars: Record<string, string | number>,
+): string {
+  return template.replace(/\{(\w+)\}/g, (_, k: string) =>
+    vars[k] !== undefined && vars[k] !== null ? String(vars[k]) : "",
+  );
 }
 
 export function mesaFormat(template: string, mesa: number): string {

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
 
 import { MERAKI_MENU } from "@/data/meraki-menu";
 import {
@@ -9,8 +9,9 @@ import {
   modifiersComplete,
   resolveUnitPrice,
 } from "@/lib/pricing";
-import { mesaT, type UiLang } from "@/lib/ui-i18n";
+import { mesaFill, mesaT, type UiLang } from "@/lib/ui-i18n";
 import type { MenuItem, MenuTab, ModifierSelections } from "@/types/menu";
+import type { OrderStatus } from "@/types/orders";
 
 type CartLine = {
   key: string;
@@ -82,6 +83,45 @@ function mergeCartLines(lines: CartLine[]): CartLine[] {
 
 export type MesaOrderExperienceProps = { mesa: number; lang: UiLang };
 
+type PublicOrderLine = {
+  name: string;
+  quantity: number;
+  optionsLabel?: string;
+  unitPriceEuros: number | null;
+};
+
+type PublicOrder = {
+  id: string;
+  mesa: number;
+  status: OrderStatus;
+  createdAt: string;
+  updatedAt: string;
+  customerNote?: string;
+  customerDisplayName?: string;
+  lines: PublicOrderLine[];
+};
+
+type MesaSession = { free: boolean; orders: PublicOrder[] };
+
+function shortOrderId(id: string) {
+  return id.replace(/-/g, "").slice(0, 8).toUpperCase();
+}
+
+function mesaStatusCustomerLabel(status: OrderStatus, lang: UiLang): string {
+  switch (status) {
+    case "nuevo":
+      return mesaT("stNuevo", lang);
+    case "preparando":
+      return mesaT("stPreparando", lang);
+    case "listo":
+      return mesaT("stListo", lang);
+    case "entregado":
+      return mesaT("stEntregado", lang);
+    case "cancelado":
+      return mesaT("stCancelado", lang);
+  }
+}
+
 export function MesaOrderExperience({ mesa, lang }: MesaOrderExperienceProps) {
   const [menuTabs, setMenuTabs] = useState<MenuTab[] | null>(null);
   const tabs = menuTabs ?? MERAKI_MENU;
@@ -99,10 +139,45 @@ export function MesaOrderExperience({ mesa, lang }: MesaOrderExperienceProps) {
   const [modalItem, setModalItem] = useState<MenuItem | null>(null);
   const [modalSelections, setModalSelections] = useState<ModifierSelections>({});
   const [pendingClearCart, setPendingClearCart] = useState(false);
+  const [serverSession, setServerSession] = useState<MesaSession | null>(null);
+  const [serverPanelOpen, setServerPanelOpen] = useState(false);
 
   useEffect(() => {
     startTransition(() => setSendArmed(false));
   }, [cart, note, customerDisplayName]);
+
+  const refreshMesaSession = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/mesa/${mesa}/active`, { cache: "no-store" });
+      const data = (await res.json().catch(() => ({}))) as {
+        free?: unknown;
+        orders?: unknown;
+      };
+      if (!res.ok) return;
+      const orders = Array.isArray(data.orders) ? (data.orders as PublicOrder[]) : [];
+      setServerSession({ free: Boolean(data.free), orders });
+    } catch {
+      /* red: ignorar */
+    }
+  }, [mesa]);
+
+  useEffect(() => {
+    void refreshMesaSession();
+    const id = window.setInterval(() => void refreshMesaSession(), 6000);
+    return () => window.clearInterval(id);
+  }, [refreshMesaSession]);
+
+  useEffect(() => {
+    if (serverSession?.free) setServerPanelOpen(false);
+  }, [serverSession?.free]);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") void refreshMesaSession();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [refreshMesaSession]);
 
   useEffect(() => {
     let cancelled = false;
@@ -172,6 +247,9 @@ export function MesaOrderExperience({ mesa, lang }: MesaOrderExperienceProps) {
     setCart((prev) => {
       const idx = prev.findIndex((l) => l.key === key);
       if (idx === -1) {
+        queueMicrotask(() =>
+          showToast(mesaFill(mesaT("addedToOrder", lang), { name: item.name })),
+        );
         return [
           ...prev,
           {
@@ -185,8 +263,12 @@ export function MesaOrderExperience({ mesa, lang }: MesaOrderExperienceProps) {
           },
         ];
       }
+      const nextQty = prev[idx]!.quantity + 1;
+      queueMicrotask(() =>
+        showToast(mesaFill(mesaT("addedMoreOf", lang), { name: item.name, n: nextQty })),
+      );
       const copy = [...prev];
-      copy[idx] = { ...copy[idx], quantity: copy[idx].quantity + 1 };
+      copy[idx] = { ...copy[idx], quantity: nextQty };
       return copy;
     });
   }
@@ -303,6 +385,7 @@ export function MesaOrderExperience({ mesa, lang }: MesaOrderExperienceProps) {
         showToast(mesaT("orderSentShort", lang));
       }
       setSendArmed(false);
+      void refreshMesaSession();
     } finally {
       setBusy(false);
     }
@@ -321,6 +404,19 @@ export function MesaOrderExperience({ mesa, lang }: MesaOrderExperienceProps) {
             <p className="text-lg font-semibold text-[#2c1f14]">
               {mesaT("mesaWord", lang)} <span className="tabular-nums">{mesa}</span>
             </p>
+            {serverSession ? (
+              <p className="mt-1.5">
+                <span
+                  className={`inline-block rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${
+                    serverSession.free
+                      ? "bg-emerald-100 text-emerald-950 ring-1 ring-emerald-300"
+                      : "bg-amber-100 text-amber-950 ring-1 ring-amber-300"
+                  }`}
+                >
+                  {serverSession.free ? mesaT("mesaStateFree", lang) : mesaT("mesaStateBusy", lang)}
+                </span>
+              </p>
+            ) : null}
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
             <div className="flex items-center gap-1.5 text-xs font-medium text-[#5c432e]">
@@ -360,6 +456,24 @@ export function MesaOrderExperience({ mesa, lang }: MesaOrderExperienceProps) {
           ))}
         </nav>
       </header>
+
+      {serverSession && !serverSession.free ? (
+        <div className="mx-auto max-w-lg px-4 pt-2">
+          <div className="flex flex-col gap-2 rounded-xl bg-amber-50 px-3 py-2.5 ring-1 ring-amber-200">
+            <p className="text-sm leading-snug text-[#5c3d0a]">{mesaT("mesaBusyHint", lang)}</p>
+            <button
+              type="button"
+              onClick={async () => {
+                await refreshMesaSession();
+                setServerPanelOpen(true);
+              }}
+              className="rounded-full bg-[#3d291c] px-4 py-2 text-center text-sm font-semibold text-[#f6ead3] hover:bg-[#2a1c13]"
+            >
+              {mesaT("viewOrderBtn", lang)}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <main className="mx-auto max-w-lg space-y-6 px-4 py-5">
         {tab.sections.map((sec) => (
@@ -677,11 +791,81 @@ export function MesaOrderExperience({ mesa, lang }: MesaOrderExperienceProps) {
             <p className="mt-4 text-sm text-[#5c432e]">{mesaT("thanksCarry", lang)}</p>
             <button
               type="button"
+              onClick={async () => {
+                setSuccessOrderId(null);
+                await refreshMesaSession();
+                setServerPanelOpen(true);
+              }}
+              className="mt-4 w-full rounded-full border border-[#c4a574] bg-white py-3 text-sm font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+            >
+              {mesaT("viewOrderFromSuccess", lang)}
+            </button>
+            <button
+              type="button"
               onClick={() => setSuccessOrderId(null)}
-              className="mt-6 w-full rounded-full bg-[#3d291c] py-3 text-sm font-semibold text-[#f6ead3] hover:bg-[#2a1c13]"
+              className="mt-2 w-full rounded-full bg-[#3d291c] py-3 text-sm font-semibold text-[#f6ead3] hover:bg-[#2a1c13]"
             >
               {mesaT("continueOrder", lang)}
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {serverPanelOpen && serverSession && !serverSession.free ? (
+        <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/45 p-3 sm:items-center">
+          <div className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-2xl bg-[#fff9ec] p-4 shadow-xl ring-1 ring-[#e2c9a0] sm:max-h-[90vh]">
+            <div className="flex items-start justify-between gap-2">
+              <h2 className="font-serif text-lg font-bold text-[#2c1f14]">
+                {mesaT("orderInKitchenTitle", lang)}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setServerPanelOpen(false)}
+                className="rounded-full px-3 py-1 text-sm font-semibold text-[#5c432e] hover:bg-[#f0e2c8]"
+              >
+                {mesaT("closePanel", lang)}
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-[#6b5138]">
+              {mesaT("mesaWord", lang)} {mesa}
+            </p>
+            <ul className="mt-4 space-y-4">
+              {serverSession.orders.map((o) => (
+                <li
+                  key={o.id}
+                  className="rounded-xl bg-white/80 p-3 ring-1 ring-[#ead4b2]"
+                >
+                  <p className="text-xs text-[#5c432e]">
+                    <span className="font-semibold">{mesaStatusCustomerLabel(o.status, lang)}</span>
+                    {" · "}
+                    <span className="font-mono tabular-nums">{shortOrderId(o.id)}</span>
+                  </p>
+                  {o.customerDisplayName ? (
+                    <p className="mt-1 text-sm font-medium text-[#3d291c]">{o.customerDisplayName}</p>
+                  ) : null}
+                  {o.customerNote ? (
+                    <p className="mt-1 text-xs text-[#6b5138]">
+                      <span className="font-semibold">{mesaT("noteLabel", lang)}</span> {o.customerNote}
+                    </p>
+                  ) : null}
+                  <ul className="mt-2 space-y-1 text-sm text-[#2c1f14]">
+                    {o.lines.map((l, i) => (
+                      <li key={`${o.id}-${i}`} className="flex justify-between gap-2">
+                        <span className="min-w-0">
+                          <span className="tabular-nums font-semibold">{l.quantity}×</span> {l.name}
+                          {l.optionsLabel ? (
+                            <span className="text-[#6b5138]"> ({l.optionsLabel})</span>
+                          ) : null}
+                        </span>
+                        <span className="shrink-0 tabular-nums text-[#5c432e]">
+                          {formatMoney(l.unitPriceEuros, lang)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
       ) : null}

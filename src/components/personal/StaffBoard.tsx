@@ -14,7 +14,6 @@ import { usePathname } from "next/navigation";
 import { summarizeOrders } from "@/lib/order-stats";
 import {
   notifyStaffNewOrder,
-  requestStaffNotificationPermission,
   staffNotificationSupported,
 } from "@/lib/staff-notification";
 import { playStaffBeep } from "@/lib/staff-beep";
@@ -23,6 +22,8 @@ import { formatHaceMinutos, orderAgeAccentClass } from "@/lib/relative-time";
 import { staffFill, staffT, type StaffUiKey } from "@/lib/staff-i18n";
 import { lineEmphasisClass, type StaffViewRole } from "@/lib/staff-roles";
 import type { UiLang } from "@/lib/ui-i18n";
+import type { StaffDayReportRow } from "@/lib/day-staff-report";
+import type { StaffMesaAssignment } from "@/lib/staff-mesa-types";
 import type { Order, OrderStatus } from "@/types/orders";
 
 const SOUND_LS = "meraki_staff_sound";
@@ -129,6 +130,7 @@ export function StaffBoard({
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [successHint, setSuccessHint] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [importingBackup, setImportingBackup] = useState(false);
   const backupFileRef = useRef<HTMLInputElement>(null);
@@ -147,6 +149,11 @@ export function StaffBoard({
     message: string;
   } | null>(null);
   const [compactFinger, setCompactFinger] = useState(false);
+  const [floorMesaInput, setFloorMesaInput] = useState("");
+  const [staffAssignments, setStaffAssignments] = useState<StaffMesaAssignment[]>([]);
+  const [floorAssignError, setFloorAssignError] = useState<string | null>(null);
+  const [staffReportRows, setStaffReportRows] = useState<StaffDayReportRow[] | null>(null);
+  const [staffReportLoading, setStaffReportLoading] = useState(false);
 
   const bootstrapped = useRef(false);
   const seenOrderIds = useRef(new Set<string>());
@@ -159,9 +166,11 @@ export function StaffBoard({
 
   useEffect(() => {
     const saved = window.localStorage.getItem("meraki_staff_key");
-    const snd = window.localStorage.getItem(SOUND_LS) === "1";
+    const sndRaw = window.localStorage.getItem(SOUND_LS);
+    const snd = sndRaw === null ? true : sndRaw === "1";
     const roleSaved = parseRole(window.localStorage.getItem(ROLE_LS));
-    const notifWanted = window.localStorage.getItem(NOTIF_LS) === "1";
+    const notifRaw = window.localStorage.getItem(NOTIF_LS);
+    const notifWanted = notifRaw === null ? true : notifRaw === "1";
     const notifOk =
       notifWanted &&
       staffNotificationSupported() &&
@@ -175,6 +184,9 @@ export function StaffBoard({
       setNotificationsEnabled(Boolean(notifOk));
       if (nm) setStaffName(nm);
     });
+    // Por defecto: sonido + notificaciones "queridas" activadas (si el navegador lo permite).
+    if (sndRaw === null) window.localStorage.setItem(SOUND_LS, "1");
+    if (notifRaw === null) window.localStorage.setItem(NOTIF_LS, "1");
   }, []);
 
   useEffect(() => {
@@ -207,8 +219,25 @@ export function StaffBoard({
     return () => window.clearInterval(id);
   }, [hydratedKey]);
 
+  useEffect(() => {
+    if (!successHint) return;
+    const id = window.setTimeout(() => setSuccessHint(null), 4500);
+    return () => window.clearTimeout(id);
+  }, [successHint]);
+
   const effectiveKey = hydratedKey === null ? null : hydratedKey;
   const hasSavedKey = Boolean(effectiveKey && effectiveKey.length > 0);
+
+  const myFloorMesasKey = useMemo(() => {
+    const n = staffName.trim().toLowerCase();
+    if (!n) return "";
+    return staffAssignments
+      .filter((a) => a.staffName.trim().toLowerCase() === n)
+      .map((a) => a.mesa)
+      .sort((a, b) => a - b)
+      .join(",");
+  }, [staffAssignments, staffName]);
+
   const compactKdsActive =
     compactFinger && (variant === "cocina" || variant === "barra");
   const syncAgeSeconds = useMemo(() => {
@@ -265,6 +294,117 @@ export function StaffBoard({
     }
   }, [effectiveKey, historyDay, lang]);
 
+  const fetchStaffAssignments = useCallback(async () => {
+    if (effectiveKey === null || !effectiveKey) return;
+    const res = await fetch("/api/staff/mesa-assignments", {
+      cache: "no-store",
+      headers: { "x-staff-key": effectiveKey },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setFloorAssignError(
+        typeof data.error === "string" ? data.error : staffT("errLoadFloor", lang),
+      );
+      return;
+    }
+    setFloorAssignError(null);
+    setStaffAssignments(Array.isArray(data.assignments) ? data.assignments : []);
+  }, [effectiveKey, lang]);
+
+  const postFloorMesa = useCallback(
+    async (action: "join" | "leave", mesa: number) => {
+      if (effectiveKey === null || !effectiveKey) return;
+      const name = staffName.trim();
+      if (!name) {
+        setFloorAssignError(staffT("floorNeedName", lang));
+        return;
+      }
+      const res = await fetch("/api/staff/mesa-assignments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-staff-key": effectiveKey,
+        },
+        body: JSON.stringify({ action, mesa, staffName: name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFloorAssignError(
+          typeof data.error === "string" ? data.error : staffT("errFloorAction", lang),
+        );
+        return;
+      }
+      setFloorAssignError(null);
+      if (action === "join") setFloorMesaInput("");
+      await fetchStaffAssignments();
+    },
+    [effectiveKey, staffName, lang, fetchStaffAssignments],
+  );
+
+  const fetchDayStaffReport = useCallback(async () => {
+    if (effectiveKey === null || !effectiveKey) return;
+    setStaffReportLoading(true);
+    setStaffReportRows(null);
+    try {
+      const qs = new URLSearchParams({ day: historyDay });
+      const res = await fetch(`/api/orders/day-staff-report?${qs}`, {
+        cache: "no-store",
+        headers: { "x-staff-key": effectiveKey },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : staffT("errStaffReport", lang));
+        return;
+      }
+      setError(null);
+      setStaffReportRows(Array.isArray(data.byStaff) ? data.byStaff : []);
+    } finally {
+      setStaffReportLoading(false);
+    }
+  }, [effectiveKey, historyDay, lang]);
+
+  useEffect(() => {
+    setStaffReportRows(null);
+  }, [historyDay]);
+
+  useEffect(() => {
+    if (effectiveKey === null || !effectiveKey) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      await fetchStaffAssignments();
+    };
+    void tick();
+    const id = window.setInterval(tick, 4300);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [effectiveKey, fetchStaffAssignments]);
+
+  useEffect(() => {
+    if (effectiveKey === null || !effectiveKey) return;
+    const name = staffName.trim();
+    if (!name || !myFloorMesasKey) return;
+    const id = window.setInterval(() => {
+      void (async () => {
+        const mesas = myFloorMesasKey.split(",").map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n));
+        for (const m of mesas) {
+          await fetch("/api/staff/mesa-assignments", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-staff-key": effectiveKey,
+            },
+            body: JSON.stringify({ action: "join", mesa: m, staffName: name }),
+          });
+        }
+        await fetchStaffAssignments();
+      })();
+    }, 42_000);
+    return () => window.clearInterval(id);
+  }, [effectiveKey, staffName, myFloorMesasKey, fetchStaffAssignments]);
+
   useEffect(() => {
     if (effectiveKey === null || view !== "activos") return;
     let cancelled = false;
@@ -282,9 +422,17 @@ export function StaffBoard({
 
   useEffect(() => {
     if (effectiveKey === null || view !== "historial") return;
-    queueMicrotask(() => {
-      void fetchHistoryOrders();
-    });
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      await fetchHistoryOrders();
+    };
+    void tick();
+    const id = window.setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
   }, [effectiveKey, fetchHistoryOrders, view, historyDay]);
 
   useEffect(() => {
@@ -337,41 +485,9 @@ export function StaffBoard({
     seenOrderIds.current.clear();
   }
 
-  function onSoundChange(e: ChangeEvent<HTMLInputElement>) {
-    const next = e.target.checked;
-    setSoundEnabled(next);
-    window.localStorage.setItem(SOUND_LS, next ? "1" : "0");
-    if (next) {
-      playStaffBeep();
-    }
-  }
-
-  async function onNotificationChange(e: ChangeEvent<HTMLInputElement>) {
-    if (!e.target.checked) {
-      setNotificationsEnabled(false);
-      window.localStorage.removeItem(NOTIF_LS);
-      return;
-    }
-    if (!staffNotificationSupported()) {
-      setError(staffT("errNotifBrowser", lang));
-      return;
-    }
-    const p = await requestStaffNotificationPermission();
-    if (p === "granted") {
-      setNotificationsEnabled(true);
-      window.localStorage.setItem(NOTIF_LS, "1");
-      setError(null);
-      try {
-        new Notification(staffT("notifActivatedTitle", lang), {
-          body: staffT("notifActivatedBody", lang),
-        });
-      } catch {
-        // HTTP u otros límites del navegador
-      }
-    } else {
-      setError(staffT("errNotifDenied", lang));
-    }
-  }
+  // Nota: la solicitud de permisos de notificación suele requerir gesto de usuario.
+  // Aquí dejamos las notificaciones "queridas" por defecto (localStorage=1) y
+  // solo se activarán si el navegador ya tiene permiso.
 
   function setStaffRole(next: StaffViewRole) {
     setRole(next);
@@ -490,6 +606,35 @@ export function StaffBoard({
     a.download = `meraki-backup-pedidos.json`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function clearEntireOrderHistory() {
+    if (effectiveKey === null) return;
+    if (!window.confirm(staffT("clearAllHistoryConfirm", lang))) return;
+    setError(null);
+    setSuccessHint(null);
+    try {
+      const res = await fetch("/api/orders/clear-all", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(effectiveKey ? { "x-staff-key": effectiveKey } : {}),
+        },
+        body: JSON.stringify({ confirm: "BORRAR_TODO" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(
+          typeof data.error === "string" ? data.error : staffT("clearAllHistoryErr", lang),
+        );
+        return;
+      }
+      setSuccessHint(staffT("clearAllHistoryOk", lang));
+      await fetchActiveOrders();
+      await fetchHistoryOrders();
+    } catch {
+      setError(staffT("clearAllHistoryErr", lang));
+    }
   }
 
   async function onBackupFile(e: ChangeEvent<HTMLInputElement>) {
@@ -706,34 +851,7 @@ export function StaffBoard({
     </label>
   );
 
-  const soundNotifBlock = (
-    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-      <label className="flex cursor-pointer items-center gap-2 text-sm text-[#3d291c]">
-        <input
-          type="checkbox"
-          checked={soundEnabled}
-          onChange={onSoundChange}
-          className="h-4 w-4 rounded border-[#c4a574] text-[#c2763a] focus:ring-[#c2763a]"
-        />
-        {staffT("soundNewOrder", lang)}
-      </label>
-      <label
-        className={`flex cursor-pointer items-center gap-2 text-sm text-[#3d291c] ${
-          !staffNotificationSupported() ? "cursor-not-allowed opacity-50" : ""
-        }`}
-      >
-        <input
-          type="checkbox"
-          checked={notificationsEnabled}
-          disabled={!staffNotificationSupported()}
-          onChange={(e) => void onNotificationChange(e)}
-          className="h-4 w-4 rounded border-[#c4a574] text-[#c2763a] focus:ring-[#c2763a] disabled:opacity-50"
-        />
-        {staffT("notifNewOrder", lang)}
-      </label>
-      <p className="text-xs leading-snug text-[#6b5138] sm:max-w-md">{staffT("notifHint", lang)}</p>
-    </div>
-  );
+  // Sonido y notificaciones: activados por defecto, sin toggles en UI.
 
   const kitchenRoleBlock =
     variant === "default" ? (
@@ -808,12 +926,6 @@ export function StaffBoard({
         </div>
       ) : null}
 
-      {!hasSavedKey ? (
-        <div className="rounded-2xl bg-[#fff9ec]/90 px-4 py-3 shadow-sm ring-1 ring-[#e2c9a0]">
-          {soundNotifBlock}
-        </div>
-      ) : null}
-
       {hasSavedKey ? (
         <div className="overflow-hidden rounded-xl bg-[#fef6e7]/90 ring-1 ring-[#e8cfa5]">
           <button
@@ -843,7 +955,6 @@ export function StaffBoard({
                 <div className="mt-3">{staffNameField}</div>
               </div>
               {kitchenRoleBlock}
-              <div className="rounded-xl bg-white/70 p-3 ring-1 ring-[#ead4b2]">{soundNotifBlock}</div>
             </div>
           ) : null}
         </div>
@@ -961,6 +1072,13 @@ export function StaffBoard({
             >
               {importingBackup ? staffT("importingBackup", lang) : staffT("restoreJson", lang)}
             </button>
+            <button
+              type="button"
+              onClick={() => void clearEntireOrderHistory()}
+              className="rounded-full border border-red-300 bg-red-50 px-4 py-2 text-sm font-semibold text-red-900 hover:bg-red-100"
+            >
+              {staffT("clearAllHistoryBtn", lang)}
+            </button>
           </div>
           </div>
           <p className="text-xs text-[#8a2f2f]">
@@ -997,6 +1115,75 @@ export function StaffBoard({
           ) : null}
         </div>
       </div>
+
+      {hasSavedKey ? (
+        <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
+          <h3 className="font-serif text-base font-semibold text-[#2c1f14]">
+            {staffT("floorBlockTitle", lang)}
+          </h3>
+          <p className="mt-2 text-xs text-[#6b5138]">{staffT("floorBlockBody", lang)}</p>
+          <p className="mt-2 text-xs text-[#5c432e]">{staffT("floorHeartbeatNote", lang)}</p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            <input
+              type="text"
+              inputMode="numeric"
+              value={floorMesaInput}
+              onChange={(e) => setFloorMesaInput(e.target.value)}
+              placeholder={staffT("floorMesaPlaceholder", lang)}
+              className="w-full max-w-[8rem] rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const m = parseInt(floorMesaInput.trim(), 10);
+                if (!Number.isFinite(m) || m < 1 || m > 99) {
+                  setFloorAssignError(staffT("errInvalidMesa", lang));
+                  return;
+                }
+                void postFloorMesa("join", m);
+              }}
+              className="rounded-full bg-[#3d291c] px-4 py-2 text-sm font-semibold text-[#f6ead3] hover:bg-[#2c1f14]"
+            >
+              {staffT("floorJoinBtn", lang)}
+            </button>
+          </div>
+          {floorAssignError ? (
+            <p className="mt-2 text-xs font-medium text-red-800">{floorAssignError}</p>
+          ) : null}
+          {staffAssignments.length === 0 ? (
+            <p className="mt-3 text-sm text-[#6b5138]">{staffT("floorNobody", lang)}</p>
+          ) : (
+            <ul className="mt-3 flex flex-col gap-2 text-sm text-[#3d291c]">
+              {[...staffAssignments]
+                .sort((a, b) => a.mesa - b.mesa || a.staffName.localeCompare(b.staffName))
+                .map((a) => {
+                  const mine =
+                    staffName.trim().length > 0 &&
+                    a.staffName.trim().toLowerCase() === staffName.trim().toLowerCase();
+                  return (
+                    <li
+                      key={`${a.mesa}-${a.staffName}-${a.updatedAt}`}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/80 px-3 py-2 ring-1 ring-[#ead4b2]"
+                    >
+                      <span>
+                        {staffT("tableWord", lang)} {a.mesa} · {a.staffName}
+                      </span>
+                      {mine ? (
+                        <button
+                          type="button"
+                          onClick={() => void postFloorMesa("leave", a.mesa)}
+                          className="rounded-full border border-[#c4a574] bg-white px-3 py-1 text-xs font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+                        >
+                          {staffT("floorLeaveBtn", lang)}
+                        </button>
+                      ) : null}
+                    </li>
+                  );
+                })}
+            </ul>
+          )}
+        </div>
+      ) : null}
 
       {view === "activos" ? (
         <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
@@ -1080,6 +1267,12 @@ export function StaffBoard({
       {error ? (
         <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-800 ring-1 ring-red-200">
           {error}
+        </p>
+      ) : null}
+
+      {successHint ? (
+        <p className="rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-900 ring-1 ring-emerald-200">
+          {successHint}
         </p>
       ) : null}
 
@@ -1208,6 +1401,71 @@ export function StaffBoard({
               .map((s) => `${statusLabel(s)} ${historySummary.byStatus[s]}`)
               .join(" · ")}
           </p>
+        </div>
+      ) : null}
+
+      {view === "historial" && hasSavedKey ? (
+        <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
+          <h3 className="font-serif text-base font-semibold text-[#2c1f14]">
+            {staffT("dayStaffReportTitle", lang)}
+          </h3>
+          <p className="mt-2 text-xs text-[#6b5138]">{staffT("dayStaffReportBody", lang)}</p>
+          <button
+            type="button"
+            disabled={staffReportLoading}
+            onClick={() => void fetchDayStaffReport()}
+            className="mt-3 rounded-full bg-[#2f7a4a] px-4 py-2 text-sm font-semibold text-white hover:bg-[#276642] disabled:opacity-50"
+          >
+            {staffReportLoading
+              ? staffT("dayStaffReportLoading", lang)
+              : staffT("dayStaffReportBtn", lang)}
+          </button>
+          {staffReportRows !== null && !staffReportLoading ? (
+            staffReportRows.length === 0 ? (
+              <p className="mt-3 text-sm text-[#6b5138]">{staffT("dayStaffReportEmpty", lang)}</p>
+            ) : (
+              <div className="mt-4 overflow-x-auto rounded-xl ring-1 ring-[#ead4b2]">
+                <table className="w-full min-w-[28rem] border-collapse text-left text-sm">
+                  <thead className="bg-[#fef6e7] text-xs uppercase tracking-wide text-[#5c432e]">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold">
+                        {staffT("dayStaffReportColPerson", lang)}
+                      </th>
+                      <th className="px-3 py-2 font-semibold tabular-nums">
+                        {staffT("dayStaffReportColDeliveries", lang)}
+                      </th>
+                      <th className="px-3 py-2 font-semibold">
+                        {staffT("dayStaffReportColTables", lang)}
+                      </th>
+                      <th className="px-3 py-2 font-semibold tabular-nums">
+                        {staffT("dayStaffReportColRevenue", lang)}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {staffReportRows.map((row) => (
+                      <tr key={row.staffKey} className="border-t border-[#ead4b2] bg-white/90">
+                        <td className="px-3 py-2 font-medium text-[#3d291c]">
+                          {row.staffKey === "__sin_nombre__"
+                            ? staffT("sinNombreStaff", lang)
+                            : row.displayName}
+                        </td>
+                        <td className="px-3 py-2 tabular-nums text-[#3d291c]">{row.deliveries}</td>
+                        <td className="px-3 py-2 text-[#5c432e]">{row.tables.join(", ")}</td>
+                        <td className="px-3 py-2 tabular-nums font-semibold text-[#2f7a4a]">
+                          {row.revenueEuros.toLocaleString(lang === "en" ? "en-GB" : "es-ES", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}{" "}
+                          €
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          ) : null}
         </div>
       ) : null}
 

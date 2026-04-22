@@ -24,6 +24,11 @@ const STAFF = {
     importingBackup: "Importando…",
     restoreWarning:
       "Restaurar sustituye todos los pedidos guardados. Descarga una copia antes si quieres conservar el historial.",
+    clearAllHistoryBtn: "Borrar todos los pedidos (pruebas)",
+    clearAllHistoryConfirm:
+      "¿Borrar para siempre todos los pedidos del sistema (cola activa e historial)? No se puede deshacer. Si necesitáis conservar datos, descargad antes una copia JSON o CSV.",
+    clearAllHistoryOk: "Listo: no queda ningún pedido guardado.",
+    clearAllHistoryErr: "No se pudo borrar el historial.",
     mesaFilterTitle: "Filtro por mesa",
     mesaPlaceholder: "Ej: 7 o 12",
     clearFilters: "Limpiar filtros",
@@ -50,7 +55,7 @@ const STAFF = {
     refreshNow: "Actualizar ya",
     daySummaryTitle: "Resumen del día",
     daySummaryBody:
-      "Totales sobre todos los pedidos del día (sin aplicar filtros de mesa o estado).",
+      "Totales sobre pedidos del día (sin filtros de mesa o estado). Importe y unidades no cuentan pedidos cancelados.",
     labelOrdersCount: "Pedidos",
     labelKnownTotal: "Total conocido",
     labelUnitsServed: "Unidades servidas",
@@ -131,6 +136,31 @@ const STAFF = {
     orderStatsBadge: "{lines} líneas · {units} uds",
     compactViewLabel: "Vista compacta (dedo)",
     compactViewHint: "Tarjetas y botones más grandes en esta vista.",
+    floorBlockTitle: "Piso · quién atiende mesa (tiempo real)",
+    floorBlockBody:
+      "Escribe tu nombre arriba (ajustes) y marca en qué mesas estás. Se renueva solo unos minutos: el listado se actualiza en vivo.",
+    floorNeedName: "Escribe tu nombre en ajustes antes de indicar una mesa.",
+    floorMesaPlaceholder: "Nº mesa",
+    floorJoinBtn: "Indicar que atiendo esta mesa",
+    floorLeaveBtn: "Salir",
+    floorNobody: "Nadie ha indicado mesa en los últimos minutos.",
+    floorHeartbeatNote:
+      "Tu mesa sigue contando mientras esta página esté abierta; si cierras, vuelve a indicarla.",
+    dayStaffReportTitle: "Informe por persona (pedidos entregados)",
+    dayStaffReportBody:
+      "Solo cuenta pedidos en estado Entregado. El importe es la suma de precios conocidos en carta. El nombre es quien figuró al marcar entregado.",
+    dayStaffReportBtn: "Cargar informe del día seleccionado",
+    dayStaffReportLoading: "Calculando…",
+    dayStaffReportEmpty: "No hay entregas con importe asignable ese día.",
+    dayStaffReportColPerson: "Persona",
+    dayStaffReportColDeliveries: "Entregas",
+    dayStaffReportColTables: "Mesas",
+    dayStaffReportColRevenue: "Importe (€)",
+    sinNombreStaff: "Sin nombre en el cambio",
+    errLoadFloor: "No se pudo cargar el listado de mesas en piso",
+    errFloorAction: "No se pudo actualizar la indicación de mesa",
+    errStaffReport: "No se pudo cargar el informe por persona",
+    errInvalidMesa: "Escribe un número de mesa entre 1 y 99.",
   },
   en: {
     loading: "Loading…",
@@ -155,6 +185,11 @@ const STAFF = {
     importingBackup: "Importing…",
     restoreWarning:
       "Restore replaces all stored orders. Download a backup first if you need to keep history.",
+    clearAllHistoryBtn: "Delete all orders (testing)",
+    clearAllHistoryConfirm:
+      "Permanently delete every order in the system (active queue and history)? This cannot be undone. Download a JSON/CSV backup first if you need to keep data.",
+    clearAllHistoryOk: "Done: no orders are stored anymore.",
+    clearAllHistoryErr: "Could not clear order history.",
     mesaFilterTitle: "Table filter",
     mesaPlaceholder: "E.g. 7 or 12",
     clearFilters: "Clear filters",
@@ -181,7 +216,7 @@ const STAFF = {
     refreshNow: "Refresh now",
     daySummaryTitle: "Day summary",
     daySummaryBody:
-      "Totals across all orders for the day (table and status filters not applied).",
+      "Totals for the day (table and status filters not applied). Amounts and units exclude cancelled orders.",
     labelOrdersCount: "Orders",
     labelKnownTotal: "Known total",
     labelUnitsServed: "Units served",
@@ -260,6 +295,31 @@ const STAFF = {
     orderStatsBadge: "{lines} lines · {units} units",
     compactViewLabel: "Compact finger view",
     compactViewHint: "Larger cards and buttons in this view.",
+    floorBlockTitle: "Floor · who is covering tables (live)",
+    floorBlockBody:
+      "Enter your name in settings, then mark which tables you are covering. Rows expire after a few minutes unless refreshed from this page.",
+    floorNeedName: "Enter your name in settings before marking a table.",
+    floorMesaPlaceholder: "Table #",
+    floorJoinBtn: "I am covering this table",
+    floorLeaveBtn: "Leave",
+    floorNobody: "No one has marked a table in the last few minutes.",
+    floorHeartbeatNote:
+      "Your table stays active while this page is open; if you close the tab, mark it again.",
+    dayStaffReportTitle: "Per-person report (delivered orders)",
+    dayStaffReportBody:
+      "Only Delivered orders. Amount sums known menu prices. Name is whoever was recorded when marking delivered.",
+    dayStaffReportBtn: "Load report for selected day",
+    dayStaffReportLoading: "Calculating…",
+    dayStaffReportEmpty: "No attributable deliveries that day.",
+    dayStaffReportColPerson: "Person",
+    dayStaffReportColDeliveries: "Deliveries",
+    dayStaffReportColTables: "Tables",
+    dayStaffReportColRevenue: "Amount (€)",
+    sinNombreStaff: "No name on status change",
+    errLoadFloor: "Could not load floor table list",
+    errFloorAction: "Could not update table assignment",
+    errStaffReport: "Could not load per-person report",
+    errInvalidMesa: "Enter a table number from 1 to 99.",
   },
 } as const;
 

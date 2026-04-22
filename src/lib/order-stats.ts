@@ -3,11 +3,11 @@ import type { Order, OrderStatus } from "@/types/orders";
 export type OrderDaySummary = {
   orderCount: number;
   byStatus: Record<OrderStatus, number>;
-  /** Suma de líneas con precio conocido (€). */
+  /** Suma de líneas con precio conocido (€); excluye pedidos cancelados. */
   knownTotalEuros: number;
-  /** Unidades de líneas sin precio (p. ej. copas «en barra»). */
+  /** Unidades de líneas sin precio (p. ej. copas «en barra»); excluye cancelados. */
   unitsWithoutKnownPrice: number;
-  /** Suma de cantidades de todas las líneas. */
+  /** Suma de cantidades de líneas; excluye pedidos cancelados. */
   totalUnits: number;
 };
 
@@ -29,6 +29,9 @@ export function summarizeOrders(orders: Order[]): OrderDaySummary {
 
   for (const o of orders) {
     byStatus[o.status] += 1;
+    if (o.status === "cancelado") {
+      continue;
+    }
     for (const l of o.lines) {
       totalUnits += l.quantity;
       if (l.unitPriceEuros === null) {
