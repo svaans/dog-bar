@@ -1,6 +1,7 @@
 "use client";
 
 import { staffFill, staffT } from "@/lib/staff-i18n";
+import { sortOrderLinesByMenuTab } from "@/lib/sort-order-lines-by-menu-tab";
 import type { UiLang } from "@/lib/ui-i18n";
 import type { Order } from "@/types/orders";
 
@@ -15,12 +16,20 @@ function esc(s: string) {
 export function OrderPrintButton({
   order,
   lang = "es",
+  menuTabByItemId,
+  menuTabOrder,
 }: {
   order: Order;
   lang?: UiLang;
+  menuTabByItemId?: Record<string, string>;
+  menuTabOrder?: string[];
 }) {
   function print() {
-    const linesHtml = order.lines
+    const linesForPrint =
+      menuTabByItemId && menuTabOrder?.length
+        ? sortOrderLinesByMenuTab(order.lines, menuTabByItemId, menuTabOrder)
+        : order.lines;
+    const linesHtml = linesForPrint
       .map(
         (l) =>
           `<tr><td>${l.quantity}×</td><td>${esc(l.name)}${l.optionsLabel ? ` <small>(${esc(l.optionsLabel)})</small>` : ""}</td><td style="text-align:right">${l.unitPriceEuros === null ? "—" : l.unitPriceEuros.toFixed(2)}</td></tr>`,

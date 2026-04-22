@@ -68,6 +68,28 @@ type StaffView = "activos" | "historial";
 type ActiveStatusFilter = "todos" | "nuevo" | "preparando" | "listo";
 
 const STAFF_NAME_LS = "meraki_staff_display_name";
+const STAFF_SETTINGS_OPEN_LS = "meraki_staff_settings_expanded";
+const STAFF_COMPACT_KDS_LS = "meraki_staff_compact_kds";
+
+function yesterdayYmdMadrid() {
+  const today = ymdEuropeMadrid();
+  const [y, m, d] = today.split("-").map((x) => parseInt(x, 10));
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() - 1);
+  return ymdEuropeMadrid(dt);
+}
+
+function orderLineStats(order: Order) {
+  const units = order.lines.reduce((s, l) => s + l.quantity, 0);
+  return { lines: order.lines.length, units };
+}
+
+function formatSyncAge(seconds: number, lang: UiLang): string {
+  if (seconds < 15) return staffT("syncJustNow", lang);
+  if (seconds < 120) return staffFill(staffT("syncSecondsAgo", lang), { n: seconds });
+  const mins = Math.floor(seconds / 60);
+  return staffFill(staffT("syncMinutesAgo", lang), { n: mins });
+}
 
 const STATUS_I18N: Record<OrderStatus, StaffUiKey> = {
   nuevo: "statusNuevo",
@@ -81,12 +103,15 @@ export type StaffBoardVariant = "default" | "cocina" | "barra";
 
 export type StaffBoardProps = {
   menuTabByItemId: Record<string, string>;
+  /** Orden de pestañas de la carta (ids), para ticket impreso y coherencia. */
+  menuTabOrder?: string[];
   variant?: StaffBoardVariant;
   lang?: UiLang;
 };
 
 export function StaffBoard({
   menuTabByItemId,
+  menuTabOrder = [],
   variant = "default",
   lang = "es",
 }: StaffBoardProps) {
@@ -114,6 +139,14 @@ export function StaffBoard({
   const [historyStatusFilter, setHistoryStatusFilter] = useState<
     "todos" | OrderStatus
   >("todos");
+  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
+  const [syncTick, setSyncTick] = useState(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [loadError, setLoadError] = useState<{
+    scope: "active" | "history";
+    message: string;
+  } | null>(null);
+  const [compactFinger, setCompactFinger] = useState(false);
 
   const bootstrapped = useRef(false);
   const seenOrderIds = useRef(new Set<string>());
@@ -154,7 +187,34 @@ export function StaffBoard({
     }
   }, [variant]);
 
+  useEffect(() => {
+    if (hydratedKey === null) return;
+    if (hydratedKey.length > 0) {
+      setSettingsOpen(window.localStorage.getItem(STAFF_SETTINGS_OPEN_LS) === "1");
+    } else {
+      setSettingsOpen(true);
+    }
+  }, [hydratedKey]);
+
+  useEffect(() => {
+    if (variant !== "cocina" && variant !== "barra") return;
+    setCompactFinger(window.localStorage.getItem(STAFF_COMPACT_KDS_LS) === "1");
+  }, [variant]);
+
+  useEffect(() => {
+    if (hydratedKey === null) return;
+    const id = window.setInterval(() => setSyncTick((t) => t + 1), 5000);
+    return () => window.clearInterval(id);
+  }, [hydratedKey]);
+
   const effectiveKey = hydratedKey === null ? null : hydratedKey;
+  const hasSavedKey = Boolean(effectiveKey && effectiveKey.length > 0);
+  const compactKdsActive =
+    compactFinger && (variant === "cocina" || variant === "barra");
+  const syncAgeSeconds = useMemo(() => {
+    if (lastSyncAt === null) return 0;
+    return Math.max(0, Math.floor((Date.now() - lastSyncAt) / 1000));
+  }, [lastSyncAt, syncTick]);
 
   const fetchActiveOrders = useCallback(async () => {
     if (effectiveKey === null) return;
@@ -166,10 +226,15 @@ export function StaffBoard({
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setError(data.error ?? staffT("errLoadOrders", lang));
+      setLoadError({
+        scope: "active",
+        message: typeof data.error === "string" ? data.error : staffT("errLoadOrders", lang),
+      });
       return;
     }
+    setLoadError((prev) => (prev?.scope === "active" ? null : prev));
     setError(null);
+    setLastSyncAt(Date.now());
     setActiveOrders(data.orders ?? []);
   }, [effectiveKey, lang]);
 
@@ -184,10 +249,15 @@ export function StaffBoard({
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      setError(data.error ?? staffT("errLoadHistory", lang));
+      setLoadError({
+        scope: "history",
+        message: typeof data.error === "string" ? data.error : staffT("errLoadHistory", lang),
+      });
       return;
     }
+    setLoadError((prev) => (prev?.scope === "history" ? null : prev));
     setError(null);
+    setLastSyncAt(Date.now());
     setHistoryOrders(data.orders ?? []);
     if (typeof data.day === "string" && typeof data.timeZone === "string") {
       setHistoryMeta({ day: data.day, timeZone: data.timeZone });
@@ -306,6 +376,24 @@ export function StaffBoard({
   function setStaffRole(next: StaffViewRole) {
     setRole(next);
     window.localStorage.setItem(ROLE_LS, next);
+  }
+
+  function persistSettingsOpen(open: boolean) {
+    setSettingsOpen(open);
+    if (typeof window !== "undefined" && hydratedKey !== null && hydratedKey.length > 0) {
+      window.localStorage.setItem(STAFF_SETTINGS_OPEN_LS, open ? "1" : "0");
+    }
+  }
+
+  function setCompactFingerPersist(next: boolean) {
+    setCompactFinger(next);
+    window.localStorage.setItem(STAFF_COMPACT_KDS_LS, next ? "1" : "0");
+  }
+
+  function retryLastFetch() {
+    if (!loadError) return;
+    if (loadError.scope === "active") void fetchActiveOrders();
+    else void fetchHistoryOrders();
   }
 
   const patchStatus = useCallback(
@@ -551,70 +639,232 @@ export function StaffBoard({
     );
   }
 
+  const langLinks = (
+    <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-[#5c432e]">
+      <a
+        href={`${pathname}?lang=es`}
+        className={lang === "es" ? "font-bold text-[#3d291c]" : "underline decoration-[#c4a574]"}
+      >
+        {staffT("langEs", lang)}
+      </a>
+      <span className="text-[#b89a6e]">|</span>
+      <a
+        href={`${pathname}?lang=en`}
+        className={lang === "en" ? "font-bold text-[#3d291c]" : "underline decoration-[#c4a574]"}
+      >
+        {staffT("langEn", lang)}
+      </a>
+    </div>
+  );
+
+  const accessFields = (
+    <>
+      <p className="mt-1 text-sm text-[#6b5138]">{staffT("accessBody", lang)}</p>
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+        <input
+          type="password"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder={staffT("keyPlaceholder", lang)}
+          className="w-full rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50 sm:max-w-xs"
+        />
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={saveKey}
+            className="rounded-full bg-[#3d291c] px-4 py-2 text-sm font-semibold text-[#f6ead3]"
+          >
+            {staffT("saveConnect", lang)}
+          </button>
+          <button
+            type="button"
+            onClick={clearKey}
+            className="rounded-full bg-[#e8d4b5] px-4 py-2 text-sm font-medium text-[#3d291c]"
+          >
+            {staffT("clear", lang)}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+
+  const staffNameField = (
+    <label className="block text-xs font-medium uppercase tracking-wide text-[#5c432e]">
+      {staffT("yourNameLabel", lang)}
+      <input
+        type="text"
+        value={staffName}
+        onChange={(e) => setStaffName(e.target.value)}
+        onBlur={() => {
+          const t = staffName.trim();
+          if (t) window.localStorage.setItem(STAFF_NAME_LS, t.slice(0, 80));
+          else window.localStorage.removeItem(STAFF_NAME_LS);
+        }}
+        placeholder={staffT("yourNamePlaceholder", lang)}
+        className="mt-1 w-full max-w-md rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+      />
+    </label>
+  );
+
+  const soundNotifBlock = (
+    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+      <label className="flex cursor-pointer items-center gap-2 text-sm text-[#3d291c]">
+        <input
+          type="checkbox"
+          checked={soundEnabled}
+          onChange={onSoundChange}
+          className="h-4 w-4 rounded border-[#c4a574] text-[#c2763a] focus:ring-[#c2763a]"
+        />
+        {staffT("soundNewOrder", lang)}
+      </label>
+      <label
+        className={`flex cursor-pointer items-center gap-2 text-sm text-[#3d291c] ${
+          !staffNotificationSupported() ? "cursor-not-allowed opacity-50" : ""
+        }`}
+      >
+        <input
+          type="checkbox"
+          checked={notificationsEnabled}
+          disabled={!staffNotificationSupported()}
+          onChange={(e) => void onNotificationChange(e)}
+          className="h-4 w-4 rounded border-[#c4a574] text-[#c2763a] focus:ring-[#c2763a] disabled:opacity-50"
+        />
+        {staffT("notifNewOrder", lang)}
+      </label>
+      <p className="text-xs leading-snug text-[#6b5138] sm:max-w-md">{staffT("notifHint", lang)}</p>
+    </div>
+  );
+
+  const kitchenRoleBlock =
+    variant === "default" ? (
+      <div className="rounded-xl bg-white/70 p-3 ring-1 ring-[#ead4b2]">
+        <p className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
+          {staffT("kitchenBarViewTitle", lang)}
+        </p>
+        <p className="mt-1 text-sm text-[#6b5138]">{staffT("kitchenBarViewBody", lang)}</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {(
+            [
+              { id: "todos" as const, label: staffT("roleTodos", lang) },
+              { id: "cocina" as const, label: staffT("roleKitchen", lang) },
+              { id: "sala" as const, label: staffT("roleBar", lang) },
+            ] as const
+          ).map((r) => (
+            <button
+              key={r.id}
+              type="button"
+              onClick={() => setStaffRole(r.id)}
+              className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${
+                role === r.id
+                  ? "bg-[#c2763a] text-white"
+                  : "bg-white text-[#3d291c] ring-1 ring-[#e2c9a0] hover:bg-[#fff3da]"
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    ) : null;
+
   return (
     <div className="space-y-4">
-      <div className="flex justify-end gap-2 text-xs font-medium text-[#5c432e]">
-        <a
-          href={`${pathname}?lang=es`}
-          className={lang === "es" ? "font-bold text-[#3d291c]" : "underline decoration-[#c4a574]"}
-        >
-          {staffT("langEs", lang)}
-        </a>
-        <span className="text-[#b89a6e]">|</span>
-        <a
-          href={`${pathname}?lang=en`}
-          className={lang === "en" ? "font-bold text-[#3d291c]" : "underline decoration-[#c4a574]"}
-        >
-          {staffT("langEn", lang)}
-        </a>
-      </div>
-
-      <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-[#5c432e]">
-          {staffT("accessTitle", lang)}
-        </h2>
-        <p className="mt-1 text-sm text-[#6b5138]">{staffT("accessBody", lang)}</p>
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-          <input
-            type="password"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder={staffT("keyPlaceholder", lang)}
-            className="w-full rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50 sm:max-w-xs"
-          />
-          <div className="flex flex-wrap gap-2">
+      {hasSavedKey ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[#fff9ec]/90 px-3 py-2.5 shadow-sm ring-1 ring-[#e2c9a0]">
+          {langLinks}
+          <div className="flex flex-wrap items-center gap-3 text-xs text-[#5c432e]">
+            {lastSyncAt !== null ? (
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-500 shadow-sm ring-2 ring-emerald-200" />
+                <span className="font-medium">
+                  {staffFill(staffT("syncUpdatedAgo", lang), {
+                    ago: formatSyncAge(syncAgeSeconds, lang),
+                  })}
+                </span>
+              </span>
+            ) : null}
             <button
               type="button"
-              onClick={saveKey}
-              className="rounded-full bg-[#3d291c] px-4 py-2 text-sm font-semibold text-[#f6ead3]"
+              onClick={() =>
+                view === "activos" ? void fetchActiveOrders() : void fetchHistoryOrders()
+              }
+              className="font-semibold text-[#c2763a] underline decoration-[#c4a574]"
             >
-              {staffT("saveConnect", lang)}
-            </button>
-            <button
-              type="button"
-              onClick={clearKey}
-              className="rounded-full bg-[#e8d4b5] px-4 py-2 text-sm font-medium text-[#3d291c]"
-            >
-              {staffT("clear", lang)}
+              {staffT("refreshNow", lang)}
             </button>
           </div>
         </div>
-        <label className="mt-3 block text-xs font-medium uppercase tracking-wide text-[#5c432e]">
-          {staffT("yourNameLabel", lang)}
+      ) : (
+        <div className="flex justify-end">{langLinks}</div>
+      )}
+
+      {!hasSavedKey ? (
+        <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-[#5c432e]">
+            {staffT("accessTitle", lang)}
+          </h2>
+          {accessFields}
+          <div className="mt-4 border-t border-[#e8cfa5] pt-4">{staffNameField}</div>
+        </div>
+      ) : null}
+
+      {!hasSavedKey ? (
+        <div className="rounded-2xl bg-[#fff9ec]/90 px-4 py-3 shadow-sm ring-1 ring-[#e2c9a0]">
+          {soundNotifBlock}
+        </div>
+      ) : null}
+
+      {hasSavedKey ? (
+        <div className="overflow-hidden rounded-xl bg-[#fef6e7]/90 ring-1 ring-[#e8cfa5]">
+          <button
+            type="button"
+            onClick={() => persistSettingsOpen(!settingsOpen)}
+            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm font-semibold text-[#3d291c] hover:bg-[#fff3da]/60"
+          >
+            <span>
+              {settingsOpen ? staffT("settingsHide", lang) : staffT("settingsShow", lang)}
+            </span>
+            <span className="text-xs text-[#5c432e]" aria-hidden>
+              {settingsOpen ? "▲" : "▼"}
+            </span>
+          </button>
+          {settingsOpen ? (
+            <div className="space-y-4 border-t border-[#e8cfa5] px-4 pb-4 pt-3">
+              <div>
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
+                  {staffT("settingsPanelTitle", lang)}
+                </h2>
+                <div className="mt-2 rounded-xl bg-white/70 p-3 ring-1 ring-[#ead4b2]">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
+                    {staffT("accessTitle", lang)}
+                  </h3>
+                  {accessFields}
+                </div>
+                <div className="mt-3">{staffNameField}</div>
+              </div>
+              {kitchenRoleBlock}
+              <div className="rounded-xl bg-white/70 p-3 ring-1 ring-[#ead4b2]">{soundNotifBlock}</div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {(variant === "cocina" || variant === "barra") ? (
+        <label className="flex cursor-pointer items-start gap-3 rounded-xl bg-[#fff9ec]/90 px-4 py-3 text-sm text-[#3d291c] shadow-sm ring-1 ring-[#e2c9a0]">
           <input
-            type="text"
-            value={staffName}
-            onChange={(e) => setStaffName(e.target.value)}
-            onBlur={() => {
-              const t = staffName.trim();
-              if (t) window.localStorage.setItem(STAFF_NAME_LS, t.slice(0, 80));
-              else window.localStorage.removeItem(STAFF_NAME_LS);
-            }}
-            placeholder={staffT("yourNamePlaceholder", lang)}
-            className="mt-1 w-full max-w-md rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+            type="checkbox"
+            checked={compactFinger}
+            onChange={(e) => setCompactFingerPersist(e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-[#c4a574] text-[#c2763a] focus:ring-[#c2763a]"
           />
+          <span>
+            <span className="font-semibold">{staffT("compactViewLabel", lang)}</span>
+            <span className="mt-0.5 block text-xs font-normal text-[#6b5138]">
+              {staffT("compactViewHint", lang)}
+            </span>
+          </span>
         </label>
-      </div>
+      ) : null}
 
       <div className="flex flex-wrap gap-2 rounded-2xl bg-[#fff9ec]/90 p-2 shadow-sm ring-1 ring-[#e2c9a0]">
         {(
@@ -645,12 +895,28 @@ export function StaffBoard({
             <label className="block text-xs font-medium uppercase tracking-wide text-[#5c432e]">
               {staffT("dayServer", lang)}
             </label>
-            <input
-              type="date"
-              value={historyDay}
-              onChange={(e) => setHistoryDay(e.target.value)}
-              className="mt-1 rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
-            />
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <input
+                type="date"
+                value={historyDay}
+                onChange={(e) => setHistoryDay(e.target.value)}
+                className="rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+              />
+              <button
+                type="button"
+                onClick={() => setHistoryDay(ymdEuropeMadrid())}
+                className="rounded-full border border-[#c4a574] bg-white px-3 py-1.5 text-xs font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+              >
+                {staffT("dayToday", lang)}
+              </button>
+              <button
+                type="button"
+                onClick={() => setHistoryDay(yesterdayYmdMadrid())}
+                className="rounded-full border border-[#c4a574] bg-white px-3 py-1.5 text-xs font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+              >
+                {staffT("dayYesterday", lang)}
+              </button>
+            </div>
             {historyMeta ? (
               <p className="mt-1 text-xs text-[#6b5138]">
                 {staffFill(staffT("tzHistoryNote", lang), { tz: historyMeta.timeZone })}
@@ -737,6 +1003,20 @@ export function StaffBoard({
           <p className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
             {staffT("queueTitle", lang)}
           </p>
+          {nuevoCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => setActiveStatusFilter("nuevo")}
+              className={`mt-3 w-full rounded-xl px-4 py-2.5 text-left text-sm font-bold transition sm:w-auto ${
+                activeStatusFilter === "nuevo"
+                  ? "bg-amber-500 text-[#1f140d] ring-2 ring-amber-600"
+                  : "bg-amber-100 text-[#5c3d0a] ring-1 ring-amber-300 hover:bg-amber-200"
+              }`}
+            >
+              {staffT("soloNuevosCta", lang)}{" "}
+              <span className="tabular-nums">({nuevoCount})</span>
+            </button>
+          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             {activeStatusFilterOptions.map((f) => (
               <button
@@ -778,85 +1058,24 @@ export function StaffBoard({
         </div>
       )}
 
-      <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
-        <p className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
-          {staffT("kitchenBarViewTitle", lang)}
-        </p>
-        <p className="mt-1 text-sm text-[#6b5138]">{staffT("kitchenBarViewBody", lang)}</p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {(
-            [
-              { id: "todos" as const, label: staffT("roleTodos", lang) },
-              { id: "cocina" as const, label: staffT("roleKitchen", lang) },
-              { id: "sala" as const, label: staffT("roleBar", lang) },
-            ] as const
-          ).map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              onClick={() => setStaffRole(r.id)}
-              className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${
-                role === r.id
-                  ? "bg-[#c2763a] text-white"
-                  : "bg-white text-[#3d291c] ring-1 ring-[#e2c9a0] hover:bg-[#fff3da]"
-              }`}
-            >
-              {r.label}
-            </button>
-          ))}
+      {!hasSavedKey && variant === "default" ? (
+        <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
+          {kitchenRoleBlock}
         </div>
-      </div>
+      ) : null}
 
-      <div className="flex flex-col gap-3 rounded-2xl bg-[#fff9ec]/90 px-4 py-3 shadow-sm ring-1 ring-[#e2c9a0] sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-[#3d291c]">
-          <input
-            type="checkbox"
-            checked={soundEnabled}
-            onChange={onSoundChange}
-            className="h-4 w-4 rounded border-[#c4a574] text-[#c2763a] focus:ring-[#c2763a]"
-          />
-          {staffT("soundNewOrder", lang)}
-        </label>
-        <label
-          className={`flex cursor-pointer items-center gap-2 text-sm text-[#3d291c] ${
-            !staffNotificationSupported() ? "cursor-not-allowed opacity-50" : ""
-          }`}
-        >
-          <input
-            type="checkbox"
-            checked={notificationsEnabled}
-            disabled={!staffNotificationSupported()}
-            onChange={(e) => void onNotificationChange(e)}
-            className="h-4 w-4 rounded border-[#c4a574] text-[#c2763a] focus:ring-[#c2763a] disabled:opacity-50"
-          />
-          {staffT("notifNewOrder", lang)}
-        </label>
-        <p className="text-[11px] leading-snug text-[#6b5138] sm:max-w-xs">
-          {staffT("notifHint", lang)}
-        </p>
-        {view === "activos" && nuevoCount > 0 ? (
-          <span className="rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-[#2c1f14] shadow-sm">
-            {nuevoCount === 1
-              ? staffT("newOne", lang)
-              : staffFill(staffT("newMany", lang), { n: nuevoCount })}
-          </span>
-        ) : view === "activos" ? (
-          <span className="text-xs text-[#6b5138]">{staffT("noNewOrders", lang)}</span>
-        ) : (
-          <span className="text-xs text-[#6b5138]">
-            {filtersActive
-              ? staffFill(staffT("showingFiltered", lang), {
-                  visible: visibleOrders.length,
-                  total: displayed.length,
-                  s: displayed.length === 1 ? "" : "s",
-                })
-              : staffFill(staffT("ordersThatDay", lang), {
-                  n: displayed.length,
-                  s: displayed.length === 1 ? "" : "s",
-                })}
-          </span>
-        )}
-      </div>
+      {loadError ? (
+        <div className="flex flex-col gap-2 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-900 ring-1 ring-red-200 sm:flex-row sm:items-center sm:justify-between">
+          <p>{loadError.message}</p>
+          <button
+            type="button"
+            onClick={() => void retryLastFetch()}
+            className="shrink-0 rounded-full bg-[#7a2f2f] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#631f1f]"
+          >
+            {staffT("retryFetch", lang)}
+          </button>
+        </div>
+      ) : null}
 
       {error ? (
         <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-800 ring-1 ring-red-200">
@@ -864,8 +1083,8 @@ export function StaffBoard({
         </p>
       ) : null}
 
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-medium text-[#3d291c]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-medium text-[#3d291c]">
           {view === "activos" ? (
             <>
               {staffT("activeOrdersHeader", lang)}{" "}
@@ -895,16 +1114,40 @@ export function StaffBoard({
               ) : null}
             </>
           )}
-        </p>
-        <button
-          type="button"
-          onClick={() =>
-            view === "activos" ? void fetchActiveOrders() : void fetchHistoryOrders()
-          }
-          className="text-sm font-medium text-[#5c432e] underline decoration-[#c4a574]"
-        >
-          {staffT("refreshNow", lang)}
-        </button>
+          {view === "activos" && nuevoCount > 0 ? (
+            <span className="mt-1 block text-xs text-[#6b5138]">
+              {nuevoCount === 1
+                ? staffT("newOne", lang)
+                : staffFill(staffT("newMany", lang), { n: nuevoCount })}
+            </span>
+          ) : view === "activos" ? (
+            <span className="mt-1 block text-xs text-[#6b5138]">{staffT("noNewOrders", lang)}</span>
+          ) : (
+            <span className="mt-1 block text-xs text-[#6b5138]">
+              {filtersActive
+                ? staffFill(staffT("showingFiltered", lang), {
+                    visible: visibleOrders.length,
+                    total: displayed.length,
+                    s: displayed.length === 1 ? "" : "s",
+                  })
+                : staffFill(staffT("ordersThatDay", lang), {
+                    n: displayed.length,
+                    s: displayed.length === 1 ? "" : "s",
+                  })}
+            </span>
+          )}
+        </div>
+        {!hasSavedKey ? (
+          <button
+            type="button"
+            onClick={() =>
+              view === "activos" ? void fetchActiveOrders() : void fetchHistoryOrders()
+            }
+            className="text-sm font-medium text-[#5c432e] underline decoration-[#c4a574]"
+          >
+            {staffT("refreshNow", lang)}
+          </button>
+        ) : null}
       </div>
 
       {view === "historial" && historyOrders.length > 0 ? (
@@ -976,10 +1219,14 @@ export function StaffBoard({
         <p className="text-center text-sm text-[#6b5138]">{staffT("emptyFiltered", lang)}</p>
       ) : (
         <ul className="space-y-3">
-          {visibleOrders.map((o) => (
+          {visibleOrders.map((o) => {
+            const stats = orderLineStats(o);
+            return (
             <li
               key={o.id}
-              className={`rounded-2xl bg-[#fff9ec]/95 p-4 shadow-sm ring-1 ring-[#e2c9a0] ${
+              className={`rounded-2xl bg-[#fff9ec]/95 shadow-sm ring-1 ring-[#e2c9a0] ${
+                compactKdsActive ? "p-3" : "p-4"
+              } ${
                 view === "activos" && o.status === "nuevo" ? "ring-2 ring-amber-400" : ""
               } ${view === "activos" ? orderAgeAccentClass(o.status, o.createdAt, nowTick) : ""}`}
             >
@@ -990,15 +1237,21 @@ export function StaffBoard({
                     {formatHaceMinutos(o.createdAt, nowTick, lang)} · {statusLabel(o.status)} ·{" "}
                     {staffT("refWord", lang)}{" "}
                     <span className="font-mono tabular-nums">{shortId(o.id)}</span>
+                    <span className="ml-1 inline-block rounded-md bg-white/90 px-1.5 py-0.5 align-middle text-xs font-semibold normal-case tracking-normal text-[#3d291c] ring-1 ring-[#e2c9a0]">
+                      {staffFill(staffT("orderStatsBadge", lang), {
+                        lines: stats.lines,
+                        units: stats.units,
+                      })}
+                    </span>
                   </p>
                   {o.lastActorName ? (
-                    <p className="mt-0.5 text-[11px] text-[#6b5138]">
+                    <p className="mt-0.5 text-xs text-[#6b5138]">
                       {staffT("lastChange", lang)}{" "}
                       <span className="font-medium">{o.lastActorName}</span>
                     </p>
                   ) : null}
                   {o.statusLog && o.statusLog.length > 0 ? (
-                    <details className="mt-1 max-w-sm text-[10px] text-[#6b5138]">
+                    <details className="mt-1 max-w-sm text-xs text-[#6b5138]">
                       <summary className="cursor-pointer select-none font-semibold text-[#5c432e] hover:underline">
                         {staffT("statusHistory", lang)}
                         {o.statusLog.length > 1 ? (
@@ -1026,7 +1279,11 @@ export function StaffBoard({
                       </ul>
                     </details>
                   ) : null}
-                  <p className="text-2xl font-bold tabular-nums text-[#2c1f14]">
+                  <p
+                    className={`font-bold tabular-nums text-[#2c1f14] ${
+                      compactKdsActive ? "text-3xl" : "text-2xl"
+                    }`}
+                  >
                     {staffT("tableWord", lang)} {o.mesa}
                   </p>
                   {o.customerDisplayName ? (
@@ -1042,14 +1299,21 @@ export function StaffBoard({
                   ) : null}
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
-                  <OrderPrintButton order={o} lang={lang} />
+                  <OrderPrintButton
+                    order={o}
+                    lang={lang}
+                    menuTabByItemId={menuTabOrder.length ? menuTabByItemId : undefined}
+                    menuTabOrder={menuTabOrder.length ? menuTabOrder : undefined}
+                  />
                   {view === "activos" ? (
                     <>
                       {nextAction[o.status] ? (
                         <button
                           type="button"
                           onClick={() => void patchStatus(o.id, nextAction[o.status]!.next)}
-                          className="rounded-full bg-[#2f7a4a] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#276642]"
+                          className={`rounded-full bg-[#2f7a4a] font-semibold text-white hover:bg-[#276642] ${
+                            compactKdsActive ? "px-4 py-2 text-base" : "px-3 py-1.5 text-sm"
+                          }`}
                         >
                           {nextAction[o.status]!.label}
                         </button>
@@ -1058,7 +1322,9 @@ export function StaffBoard({
                         <button
                           type="button"
                           onClick={() => void patchStatus(o.id, "nuevo")}
-                          className="rounded-full border border-[#c4a574] bg-white px-3 py-1.5 text-xs font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+                          className={`rounded-full border border-[#c4a574] bg-white font-semibold text-[#3d291c] hover:bg-[#fff3da] ${
+                            compactKdsActive ? "px-3 py-2 text-sm" : "px-3 py-1.5 text-xs"
+                          }`}
                         >
                           {staffT("backToNew", lang)}
                         </button>
@@ -1067,7 +1333,9 @@ export function StaffBoard({
                         <button
                           type="button"
                           onClick={() => void patchStatus(o.id, "preparando")}
-                          className="rounded-full border border-[#c4a574] bg-white px-3 py-1.5 text-xs font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+                          className={`rounded-full border border-[#c4a574] bg-white font-semibold text-[#3d291c] hover:bg-[#fff3da] ${
+                            compactKdsActive ? "px-3 py-2 text-sm" : "px-3 py-1.5 text-xs"
+                          }`}
                         >
                           {staffT("backToPrep", lang)}
                         </button>
@@ -1076,7 +1344,9 @@ export function StaffBoard({
                         <button
                           type="button"
                           onClick={() => void patchStatus(o.id, "cancelado")}
-                          className="rounded-full bg-[#f0e2c8] px-3 py-1.5 text-sm font-medium text-[#7a2f2f] hover:bg-[#e7d2b0]"
+                          className={`rounded-full bg-[#f0e2c8] font-medium text-[#7a2f2f] hover:bg-[#e7d2b0] ${
+                            compactKdsActive ? "px-4 py-2 text-sm" : "px-3 py-1.5 text-sm"
+                          }`}
                         >
                           {staffT("cancelOrder", lang)}
                         </button>
@@ -1088,7 +1358,9 @@ export function StaffBoard({
                         <button
                           type="button"
                           onClick={() => void patchStatus(o.id, "listo")}
-                          className="rounded-full border border-[#c4a574] bg-white px-3 py-1.5 text-xs font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+                          className={`rounded-full border border-[#c4a574] bg-white font-semibold text-[#3d291c] hover:bg-[#fff3da] ${
+                            compactKdsActive ? "px-3 py-2 text-sm" : "px-3 py-1.5 text-xs"
+                          }`}
                         >
                           {staffT("fixBackToReady", lang)}
                         </button>
@@ -1097,7 +1369,9 @@ export function StaffBoard({
                         <button
                           type="button"
                           onClick={() => void patchStatus(o.id, "nuevo")}
-                          className="rounded-full border border-[#8a6a3a] bg-[#fff3da] px-3 py-1.5 text-xs font-semibold text-[#3d291c] hover:bg-[#ffe8c4]"
+                          className={`rounded-full border border-[#8a6a3a] bg-[#fff3da] font-semibold text-[#3d291c] hover:bg-[#ffe8c4] ${
+                            compactKdsActive ? "px-3 py-2 text-sm" : "px-3 py-1.5 text-xs"
+                          }`}
                         >
                           {staffT("restoreOrder", lang)}
                         </button>
@@ -1130,7 +1404,8 @@ export function StaffBoard({
                 ))}
               </ul>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </div>

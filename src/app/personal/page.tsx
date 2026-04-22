@@ -28,7 +28,9 @@ export default async function PersonalPage({
 }) {
   const sp = await searchParams;
   const lang: UiLang = sp.lang === "en" ? "en" : "es";
-  const menuTabByItemId = buildTabIdMap(getMenuTabs());
+  const menuTabs = getMenuTabs();
+  const menuTabByItemId = buildTabIdMap(menuTabs);
+  const menuTabOrder = menuTabs.map((t) => t.id);
   const suffix = `?lang=${lang}`;
 
   return (
@@ -74,7 +76,12 @@ export default async function PersonalPage({
           <p className="text-sm text-[#5c432e]">{staffT("personalPreparePanel", lang)}</p>
         }
       >
-        <StaffBoard menuTabByItemId={menuTabByItemId} variant="default" lang={lang} />
+        <StaffBoard
+          menuTabByItemId={menuTabByItemId}
+          menuTabOrder={menuTabOrder}
+          variant="default"
+          lang={lang}
+        />
       </Suspense>
     </div>
   );

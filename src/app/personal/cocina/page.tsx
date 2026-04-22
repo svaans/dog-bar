@@ -28,7 +28,9 @@ export default async function CocinaPage({
 }) {
   const sp = await searchParams;
   const lang: UiLang = sp.lang === "en" ? "en" : "es";
-  const menuTabByItemId = buildTabIdMap(getMenuTabs());
+  const menuTabs = getMenuTabs();
+  const menuTabByItemId = buildTabIdMap(menuTabs);
+  const menuTabOrder = menuTabs.map((t) => t.id);
   const suffix = `?lang=${lang}`;
 
   return (
@@ -62,7 +64,12 @@ export default async function CocinaPage({
         </p>
       </header>
       <Suspense fallback={<p className="text-sm text-[#5c432e]">{staffT("loading", lang)}</p>}>
-        <StaffBoard menuTabByItemId={menuTabByItemId} variant="cocina" lang={lang} />
+        <StaffBoard
+          menuTabByItemId={menuTabByItemId}
+          menuTabOrder={menuTabOrder}
+          variant="cocina"
+          lang={lang}
+        />
       </Suspense>
     </div>
   );

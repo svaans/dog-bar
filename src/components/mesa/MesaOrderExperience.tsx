@@ -493,7 +493,12 @@ export function MesaOrderExperience({ mesa, lang }: MesaOrderExperienceProps) {
         </div>
       ) : null}
 
-      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-[#c4a574]/70 bg-[#fff9ec]/95 px-4 py-3 backdrop-blur">
+      <div
+        className="fixed inset-x-0 bottom-0 z-30 border-t border-[#c4a574]/70 bg-[#fff9ec]/95 px-4 pt-3 backdrop-blur"
+        style={{
+          paddingBottom: "max(0.75rem, env(safe-area-inset-bottom, 0px))",
+        }}
+      >
         <div className="mx-auto flex max-w-lg flex-col gap-2">
           {pendingClearCart ? (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#fde8e8] px-3 py-2 text-sm text-[#5c1f1f] ring-1 ring-[#e7b4b4]">
@@ -610,15 +615,15 @@ export function MesaOrderExperience({ mesa, lang }: MesaOrderExperienceProps) {
                   <span className="flex shrink-0 items-center gap-1">
                     <button
                       type="button"
-                      className="h-7 w-7 rounded-md bg-[#f0e2c8] text-base leading-none"
+                      className="flex h-9 min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-[#f0e2c8] text-lg leading-none"
                       onClick={() => setQty(l.key, l.quantity - 1)}
                     >
                       −
                     </button>
-                    <span className="w-6 text-center tabular-nums">{l.quantity}</span>
+                    <span className="w-8 text-center tabular-nums">{l.quantity}</span>
                     <button
                       type="button"
-                      className="h-7 w-7 rounded-md bg-[#f0e2c8] text-base leading-none"
+                      className="flex h-9 min-h-[44px] min-w-[44px] items-center justify-center rounded-md bg-[#f0e2c8] text-lg leading-none"
                       onClick={() => setQty(l.key, l.quantity + 1)}
                     >
                       +
