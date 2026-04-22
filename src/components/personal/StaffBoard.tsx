@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type FormEvent,
 } from "react";
 import { usePathname } from "next/navigation";
 
@@ -23,6 +24,7 @@ import { staffFill, staffT, type StaffUiKey } from "@/lib/staff-i18n";
 import { lineEmphasisClass, type StaffViewRole } from "@/lib/staff-roles";
 import type { UiLang } from "@/lib/ui-i18n";
 import type { StaffDayReportRow } from "@/lib/day-staff-report";
+import type { EmployeePublic } from "@/lib/employee-types";
 import type { StaffMesaAssignment } from "@/lib/staff-mesa-types";
 import type { Order, OrderStatus } from "@/types/orders";
 
@@ -154,6 +156,19 @@ export function StaffBoard({
   const [floorAssignError, setFloorAssignError] = useState<string | null>(null);
   const [staffReportRows, setStaffReportRows] = useState<StaffDayReportRow[] | null>(null);
   const [staffReportLoading, setStaffReportLoading] = useState(false);
+  const [profilesEnabled, setProfilesEnabled] = useState(false);
+  const [employeeMe, setEmployeeMe] = useState<EmployeePublic | null>(null);
+  const [employeeBootLoading, setEmployeeBootLoading] = useState(false);
+  const [adminEmpList, setAdminEmpList] = useState<(EmployeePublic & { active: boolean })[]>([]);
+  const [adminEmpSaving, setAdminEmpSaving] = useState(false);
+  const [newEmpNumber, setNewEmpNumber] = useState("");
+  const [newEmpName, setNewEmpName] = useState("");
+  const [newEmpPin, setNewEmpPin] = useState("");
+  const [adminEmpMsg, setAdminEmpMsg] = useState<string | null>(null);
+  const [empLoginNumber, setEmpLoginNumber] = useState("");
+  const [empLoginPin, setEmpLoginPin] = useState("");
+  const [empLoginErr, setEmpLoginErr] = useState<string | null>(null);
+  const [floorShowAllMesas, setFloorShowAllMesas] = useState(false);
 
   const bootstrapped = useRef(false);
   const seenOrderIds = useRef(new Set<string>());
@@ -200,6 +215,13 @@ export function StaffBoard({
   }, [variant]);
 
   useEffect(() => {
+    // En módulos de cocina/barra dejamos solo Activos (sin historial/export).
+    if (variant === "cocina" || variant === "barra") {
+      startTransition(() => setView("activos"));
+    }
+  }, [variant]);
+
+  useEffect(() => {
     if (hydratedKey === null) return;
     if (hydratedKey.length > 0) {
       setSettingsOpen(window.localStorage.getItem(STAFF_SETTINGS_OPEN_LS) === "1");
@@ -229,14 +251,14 @@ export function StaffBoard({
   const hasSavedKey = Boolean(effectiveKey && effectiveKey.length > 0);
 
   const myFloorMesasKey = useMemo(() => {
-    const n = staffName.trim().toLowerCase();
-    if (!n) return "";
+    const label = (employeeMe?.displayName ?? staffName).trim().toLowerCase();
+    if (!label) return "";
     return staffAssignments
-      .filter((a) => a.staffName.trim().toLowerCase() === n)
+      .filter((a) => a.staffName.trim().toLowerCase() === label)
       .map((a) => a.mesa)
       .sort((a, b) => a - b)
       .join(",");
-  }, [staffAssignments, staffName]);
+  }, [staffAssignments, staffName, employeeMe]);
 
   const compactKdsActive =
     compactFinger && (variant === "cocina" || variant === "barra");
@@ -315,7 +337,7 @@ export function StaffBoard({
     async (action: "join" | "leave", mesa: number) => {
       if (effectiveKey === null || !effectiveKey) return;
       const name = staffName.trim();
-      if (!name) {
+      if (!employeeMe && !name) {
         setFloorAssignError(staffT("floorNeedName", lang));
         return;
       }
@@ -325,7 +347,9 @@ export function StaffBoard({
           "Content-Type": "application/json",
           "x-staff-key": effectiveKey,
         },
-        body: JSON.stringify({ action, mesa, staffName: name }),
+        body: JSON.stringify(
+          employeeMe ? { action, mesa } : { action, mesa, staffName: name },
+        ),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -338,7 +362,7 @@ export function StaffBoard({
       if (action === "join") setFloorMesaInput("");
       await fetchStaffAssignments();
     },
-    [effectiveKey, staffName, lang, fetchStaffAssignments],
+    [effectiveKey, employeeMe, staffName, lang, fetchStaffAssignments],
   );
 
   const fetchDayStaffReport = useCallback(async () => {
@@ -363,6 +387,69 @@ export function StaffBoard({
     }
   }, [effectiveKey, historyDay, lang]);
 
+  const refetchEmployeeBootstrap = useCallback(async () => {
+    if (effectiveKey === null || !effectiveKey) {
+      startTransition(() => {
+        setProfilesEnabled(false);
+        setEmployeeMe(null);
+        setEmployeeBootLoading(false);
+      });
+      return;
+    }
+    setEmployeeBootLoading(true);
+    try {
+      const r = await fetch("/api/staff/employee/bootstrap", {
+        cache: "no-store",
+        headers: { "x-staff-key": effectiveKey },
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setProfilesEnabled(false);
+        setEmployeeMe(null);
+        return;
+      }
+      setProfilesEnabled(Boolean(d.profilesEnabled));
+      if (d.employee?.id && typeof d.employee.displayName === "string") {
+        setEmployeeMe({
+          id: String(d.employee.id),
+          employeeNumber: Number(d.employee.employeeNumber),
+          displayName: String(d.employee.displayName),
+        });
+      } else {
+        setEmployeeMe(null);
+      }
+    } finally {
+      setEmployeeBootLoading(false);
+    }
+  }, [effectiveKey]);
+
+  const fetchAdminEmpList = useCallback(async () => {
+    if (effectiveKey === null || !effectiveKey) return;
+    const r = await fetch("/api/admin/employees", {
+      cache: "no-store",
+      headers: { "x-staff-key": effectiveKey },
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) return;
+    setAdminEmpList(Array.isArray(d.employees) ? d.employees : []);
+  }, [effectiveKey]);
+
+  useEffect(() => {
+    void refetchEmployeeBootstrap();
+  }, [refetchEmployeeBootstrap]);
+
+  useEffect(() => {
+    if (hasSavedKey && settingsOpen) void fetchAdminEmpList();
+  }, [hasSavedKey, settingsOpen, fetchAdminEmpList]);
+
+  useEffect(() => {
+    if (!employeeMe?.displayName) return;
+    const t = employeeMe.displayName.trim().slice(0, 80);
+    if (!t) return;
+    startTransition(() => setStaffName(t));
+    window.localStorage.setItem(STAFF_NAME_LS, t);
+  }, [employeeMe?.displayName, employeeMe?.id]);
+
   useEffect(() => {
     setStaffReportRows(null);
   }, [historyDay]);
@@ -384,11 +471,14 @@ export function StaffBoard({
 
   useEffect(() => {
     if (effectiveKey === null || !effectiveKey) return;
-    const name = staffName.trim();
-    if (!name || !myFloorMesasKey) return;
+    if (!myFloorMesasKey) return;
+    if (!employeeMe && !staffName.trim()) return;
     const id = window.setInterval(() => {
       void (async () => {
-        const mesas = myFloorMesasKey.split(",").map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n));
+        const mesas = myFloorMesasKey
+          .split(",")
+          .map((x) => parseInt(x, 10))
+          .filter((n) => Number.isFinite(n));
         for (const m of mesas) {
           await fetch("/api/staff/mesa-assignments", {
             method: "POST",
@@ -396,14 +486,18 @@ export function StaffBoard({
               "Content-Type": "application/json",
               "x-staff-key": effectiveKey,
             },
-            body: JSON.stringify({ action: "join", mesa: m, staffName: name }),
+            body: JSON.stringify(
+              employeeMe
+                ? { action: "join", mesa: m }
+                : { action: "join", mesa: m, staffName: staffName.trim() },
+            ),
           });
         }
         await fetchStaffAssignments();
       })();
     }, 42_000);
     return () => window.clearInterval(id);
-  }, [effectiveKey, staffName, myFloorMesasKey, fetchStaffAssignments]);
+  }, [effectiveKey, employeeMe, staffName, myFloorMesasKey, fetchStaffAssignments]);
 
   useEffect(() => {
     if (effectiveKey === null || view !== "activos") return;
@@ -483,6 +577,11 @@ export function StaffBoard({
     setHistoryOrders([]);
     bootstrapped.current = false;
     seenOrderIds.current.clear();
+    setEmployeeMe(null);
+    setProfilesEnabled(false);
+    setAdminEmpList([]);
+    setAdminEmpMsg(null);
+    setEmpLoginErr(null);
   }
 
   // Nota: la solicitud de permisos de notificación suele requerir gesto de usuario.
@@ -528,7 +627,7 @@ export function StaffBoard({
         },
         body: JSON.stringify({
           status,
-          actorName: staffName.trim() || undefined,
+          ...(!employeeMe ? { actorName: staffName.trim() || undefined } : {}),
           ...(orderSnapshot?.updatedAt
             ? { baseUpdatedAt: orderSnapshot.updatedAt }
             : {}),
@@ -559,6 +658,7 @@ export function StaffBoard({
       historyOrders,
       lang,
       staffName,
+      employeeMe,
       view,
     ],
   );
@@ -776,6 +876,128 @@ export function StaffBoard({
     [lang],
   );
 
+  const employeeGateActive = hasSavedKey && profilesEnabled;
+  const gateBlocked = employeeGateActive && (employeeBootLoading || employeeMe === null);
+
+  function isFloorMine(n: string): boolean {
+    const t = n.trim().toLowerCase();
+    if (employeeMe) return t === employeeMe.displayName.trim().toLowerCase();
+    return staffName.trim().length > 0 && t === staffName.trim().toLowerCase();
+  }
+
+  function onFloorMesaToggle(mesa: number) {
+    const row = staffAssignments.find((a) => a.mesa === mesa && isFloorMine(a.staffName));
+    if (row) void postFloorMesa("leave", mesa);
+    else void postFloorMesa("join", mesa);
+  }
+
+  async function submitEmployeeLogin() {
+    if (effectiveKey === null || !effectiveKey) return;
+    setEmpLoginErr(null);
+    const n = parseInt(empLoginNumber.trim(), 10);
+    if (!Number.isFinite(n) || n < 1 || n > 999) {
+      setEmpLoginErr(staffT("employeeNumberInvalid", lang));
+      return;
+    }
+    const r = await fetch("/api/staff/employee/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-staff-key": effectiveKey,
+      },
+      body: JSON.stringify({ employeeNumber: n, pin: empLoginPin }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      setEmpLoginErr(typeof d.error === "string" ? d.error : staffT("errEmployeeLogin", lang));
+      return;
+    }
+    if (d.employee) {
+      const emp = {
+        id: String(d.employee.id),
+        employeeNumber: Number(d.employee.employeeNumber),
+        displayName: String(d.employee.displayName),
+      };
+      setEmployeeMe(emp);
+      const t = emp.displayName.trim().slice(0, 80);
+      setStaffName(t);
+      if (t) window.localStorage.setItem(STAFF_NAME_LS, t);
+    }
+    setEmpLoginPin("");
+    await refetchEmployeeBootstrap();
+  }
+
+  async function submitEmployeeLogout() {
+    if (effectiveKey === null || !effectiveKey) return;
+    await fetch("/api/staff/employee/logout", {
+      method: "POST",
+      headers: { "x-staff-key": effectiveKey },
+    });
+    setEmployeeMe(null);
+    await refetchEmployeeBootstrap();
+  }
+
+  async function submitCreateEmployee(e: FormEvent) {
+    e.preventDefault();
+    if (effectiveKey === null || !effectiveKey) return;
+    setAdminEmpMsg(null);
+    const n = parseInt(newEmpNumber.trim(), 10);
+    if (!Number.isFinite(n) || n < 1 || n > 999) {
+      setAdminEmpMsg(staffT("errInvalidMesa", lang));
+      return;
+    }
+    setAdminEmpSaving(true);
+    try {
+      const r = await fetch("/api/admin/employees", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-staff-key": effectiveKey,
+        },
+        body: JSON.stringify({
+          employeeNumber: n,
+          displayName: newEmpName.trim(),
+          pin: newEmpPin.trim(),
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setAdminEmpMsg(typeof d.error === "string" ? d.error : staffT("errAdminEmployees", lang));
+        return;
+      }
+      setNewEmpNumber("");
+      setNewEmpName("");
+      setNewEmpPin("");
+      setAdminEmpMsg(staffT("employeeCreatedOk", lang));
+      await fetchAdminEmpList();
+      await refetchEmployeeBootstrap();
+    } finally {
+      setAdminEmpSaving(false);
+    }
+  }
+
+  async function deactivateEmployee(id: string) {
+    if (effectiveKey === null || !effectiveKey) return;
+    if (
+      !window.confirm(
+        lang === "en" ? "Deactivate this employee profile?" : "¿Desactivar este perfil de empleado?",
+      )
+    ) {
+      return;
+    }
+    const r = await fetch(`/api/admin/employees/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "x-staff-key": effectiveKey,
+      },
+      body: JSON.stringify({ active: false }),
+    });
+    if (!r.ok) return;
+    await fetchAdminEmpList();
+    await refetchEmployeeBootstrap();
+  }
+
   if (effectiveKey === null) {
     return (
       <p className="rounded-xl bg-white/80 px-4 py-3 text-sm text-[#5c432e] ring-1 ring-[#e2c9a0]">
@@ -952,7 +1174,117 @@ export function StaffBoard({
                   </h3>
                   {accessFields}
                 </div>
-                <div className="mt-3">{staffNameField}</div>
+                {!profilesEnabled ? <div className="mt-3">{staffNameField}</div> : null}
+                {profilesEnabled && employeeMe ? (
+                  <div className="mt-3 rounded-xl bg-white/70 p-3 ring-1 ring-[#ead4b2]">
+                    <p className="text-sm font-medium text-[#3d291c]">
+                      {staffFill(staffT("employeeLoggedAs", lang), {
+                        name: employeeMe.displayName,
+                        n: String(employeeMe.employeeNumber),
+                      })}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void submitEmployeeLogout()}
+                      className="mt-2 rounded-full border border-[#c4a574] bg-white px-4 py-2 text-sm font-semibold text-[#3d291c] hover:bg-[#fff3da]"
+                    >
+                      {staffT("employeeLogoutBtn", lang)}
+                    </button>
+                  </div>
+                ) : null}
+                {profilesEnabled && !employeeMe ? (
+                  <p className="mt-3 text-xs text-[#6b5138]">
+                    {staffT("employeeSettingsNeedLogin", lang)}
+                  </p>
+                ) : null}
+                {variant === "default" ? (
+                <div className="mt-4 border-t border-[#e8cfa5] pt-4">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
+                    {staffT("employeeAdminTitle", lang)}
+                  </h3>
+                  <p className="mt-1 text-xs text-[#6b5138]">{staffT("employeeAdminBody", lang)}</p>
+                  <form
+                    onSubmit={(e) => void submitCreateEmployee(e)}
+                    className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end"
+                  >
+                    <label className="block text-xs font-medium text-[#5c432e]">
+                      {staffT("employeeNumberLabel", lang)}
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={newEmpNumber}
+                        onChange={(e) => setNewEmpNumber(e.target.value)}
+                        placeholder={staffT("employeeNewNumberPh", lang)}
+                        className="mt-1 w-24 rounded-xl border border-[#d8bf9a] bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+                      />
+                    </label>
+                    <label className="block min-w-[10rem] flex-1 text-xs font-medium text-[#5c432e]">
+                      {staffT("yourNameLabel", lang)}
+                      <input
+                        type="text"
+                        value={newEmpName}
+                        onChange={(e) => setNewEmpName(e.target.value)}
+                        placeholder={staffT("employeeNewNamePh", lang)}
+                        className="mt-1 w-full max-w-xs rounded-xl border border-[#d8bf9a] bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+                      />
+                    </label>
+                    <label className="block text-xs font-medium text-[#5c432e]">
+                      {staffT("employeePinLabel", lang)}
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        autoComplete="new-password"
+                        value={newEmpPin}
+                        onChange={(e) => setNewEmpPin(e.target.value)}
+                        placeholder={staffT("employeeNewPinPh", lang)}
+                        className="mt-1 w-36 rounded-xl border border-[#d8bf9a] bg-white px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+                      />
+                    </label>
+                    <button
+                      type="submit"
+                      disabled={adminEmpSaving}
+                      className="rounded-full bg-[#3d291c] px-4 py-2 text-sm font-semibold text-[#f6ead3] hover:bg-[#2c1f14] disabled:opacity-50"
+                    >
+                      {staffT("employeeCreateBtn", lang)}
+                    </button>
+                  </form>
+                  {adminEmpMsg ? (
+                    <p className="mt-2 text-xs font-medium text-[#2f7a4a]">{adminEmpMsg}</p>
+                  ) : null}
+                  {settingsOpen && adminEmpList.length > 0 ? (
+                    <div className="mt-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-[#5c432e]">
+                        {staffT("employeeListTitle", lang)}
+                      </p>
+                      <ul className="mt-2 space-y-2 text-sm">
+                        {adminEmpList.map((emp) => (
+                          <li
+                            key={emp.id}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white/80 px-3 py-2 ring-1 ring-[#ead4b2]"
+                          >
+                            <span className="text-[#3d291c]">
+                              <span className="tabular-nums font-semibold">#{emp.employeeNumber}</span>{" "}
+                              {emp.displayName}{" "}
+                              <span className="text-xs text-[#6b5138]">
+                                {emp.active ? staffT("employeeActive", lang) : staffT("employeeInactive", lang)}
+                              </span>
+                            </span>
+                            {emp.active ? (
+                              <button
+                                type="button"
+                                onClick={() => void deactivateEmployee(emp.id)}
+                                className="rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-semibold text-red-900 hover:bg-red-100"
+                              >
+                                {staffT("employeeDeactivateBtn", lang)}
+                              </button>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+                ) : null}
               </div>
               {kitchenRoleBlock}
             </div>
@@ -977,29 +1309,82 @@ export function StaffBoard({
         </label>
       ) : null}
 
-      <div className="flex flex-wrap gap-2 rounded-2xl bg-[#fff9ec]/90 p-2 shadow-sm ring-1 ring-[#e2c9a0]">
-        {(
-          [
-            { id: "activos" as const, label: staffT("tabActive", lang) },
-            { id: "historial" as const, label: staffT("tabHistory", lang) },
-          ] as const
-        ).map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setView(t.id)}
-            className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-              view === t.id
-                ? "bg-[#3d291c] text-[#f6ead3]"
-                : "bg-white text-[#3d291c] ring-1 ring-[#e2c9a0] hover:bg-[#fff3da]"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {gateBlocked ? (
+        <div className="rounded-2xl border-2 border-amber-300 bg-amber-50/95 p-5 shadow-sm ring-1 ring-amber-200">
+          <h2 className="font-serif text-lg font-semibold text-[#2c1f14]">
+            {staffT("employeeGateTitle", lang)}
+          </h2>
+          <p className="mt-2 text-sm text-[#6b5138]">{staffT("employeeGateBody", lang)}</p>
+          {employeeBootLoading ? (
+            <p className="mt-4 text-sm text-[#5c432e]">{staffT("loading", lang)}</p>
+          ) : (
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+              <label className="block text-xs font-medium text-[#5c432e]">
+                {staffT("employeeNumberLabel", lang)}
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={empLoginNumber}
+                  onChange={(e) => setEmpLoginNumber(e.target.value)}
+                  className="mt-1 w-full max-w-[10rem] rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+                />
+              </label>
+              <label className="block text-xs font-medium text-[#5c432e]">
+                {staffT("employeePinLabel", lang)}
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  value={empLoginPin}
+                  onChange={(e) => setEmpLoginPin(e.target.value)}
+                  className="mt-1 w-full max-w-[10rem] rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => void submitEmployeeLogin()}
+                className="rounded-full bg-[#3d291c] px-5 py-2.5 text-sm font-semibold text-[#f6ead3] hover:bg-[#2c1f14]"
+              >
+                {staffT("employeeLoginBtn", lang)}
+              </button>
+            </div>
+          )}
+          {empLoginErr ? (
+            <p className="mt-3 text-xs font-medium text-red-800">{empLoginErr}</p>
+          ) : null}
+        </div>
+      ) : null}
 
-      {view === "historial" ? (
+      {!gateBlocked ? (
+        <>
+      {variant === "default" ? (
+        <div className="flex flex-wrap gap-2 rounded-2xl bg-[#fff9ec]/90 p-2 shadow-sm ring-1 ring-[#e2c9a0]">
+          {(
+            [
+              { id: "activos" as const, label: staffT("tabActive", lang) },
+              { id: "historial" as const, label: staffT("tabHistory", lang) },
+            ] as const
+          ).map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setView(t.id)}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                view === t.id
+                  ? "bg-[#3d291c] text-[#f6ead3]"
+                  : "bg-white text-[#3d291c] ring-1 ring-[#e2c9a0] hover:bg-[#fff3da]"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-2xl bg-[#fff9ec]/90 p-3 text-sm font-semibold text-[#5c432e] shadow-sm ring-1 ring-[#e2c9a0]">
+          {staffT("tabActive", lang)}
+        </div>
+      )}
+
+      {variant === "default" && view === "historial" ? (
         <div className="flex flex-col gap-3 rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
           <div>
@@ -1116,37 +1501,74 @@ export function StaffBoard({
         </div>
       </div>
 
-      {hasSavedKey ? (
+      {variant === "default" && hasSavedKey ? (
         <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
           <h3 className="font-serif text-base font-semibold text-[#2c1f14]">
             {staffT("floorBlockTitle", lang)}
           </h3>
-          <p className="mt-2 text-xs text-[#6b5138]">{staffT("floorBlockBody", lang)}</p>
+          <p className="mt-2 text-xs text-[#6b5138]">
+            {employeeMe ? staffT("floorGridHint", lang) : staffT("floorBlockBody", lang)}
+          </p>
           <p className="mt-2 text-xs text-[#5c432e]">{staffT("floorHeartbeatNote", lang)}</p>
-          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-            <input
-              type="text"
-              inputMode="numeric"
-              value={floorMesaInput}
-              onChange={(e) => setFloorMesaInput(e.target.value)}
-              placeholder={staffT("floorMesaPlaceholder", lang)}
-              className="w-full max-w-[8rem] rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                const m = parseInt(floorMesaInput.trim(), 10);
-                if (!Number.isFinite(m) || m < 1 || m > 99) {
-                  setFloorAssignError(staffT("errInvalidMesa", lang));
-                  return;
-                }
-                void postFloorMesa("join", m);
-              }}
-              className="rounded-full bg-[#3d291c] px-4 py-2 text-sm font-semibold text-[#f6ead3] hover:bg-[#2c1f14]"
-            >
-              {staffT("floorJoinBtn", lang)}
-            </button>
-          </div>
+          {employeeMe ? (
+            <>
+              <div className="mt-3 grid grid-cols-5 gap-2 sm:grid-cols-8 md:grid-cols-10">
+                {Array.from({ length: floorShowAllMesas ? 99 : 40 }, (_, i) => i + 1).map((m) => {
+                  const mineRow = staffAssignments.some(
+                    (a) => a.mesa === m && isFloorMine(a.staffName),
+                  );
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => onFloorMesaToggle(m)}
+                      className={`rounded-xl py-2 text-sm font-semibold tabular-nums transition ring-1 ${
+                        mineRow
+                          ? "bg-[#2f7a4a] text-white ring-[#276642]"
+                          : "bg-white text-[#3d291c] ring-[#e2c9a0] hover:bg-[#fff3da]"
+                      }`}
+                    >
+                      {m}
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => setFloorShowAllMesas((v) => !v)}
+                className="mt-2 text-xs font-semibold text-[#c2763a] underline decoration-[#e2c9a0]"
+              >
+                {floorShowAllMesas
+                  ? staffT("floorShowFewerMesas", lang)
+                  : staffT("floorShowAllMesas", lang)}
+              </button>
+            </>
+          ) : (
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+              <input
+                type="text"
+                inputMode="numeric"
+                value={floorMesaInput}
+                onChange={(e) => setFloorMesaInput(e.target.value)}
+                placeholder={staffT("floorMesaPlaceholder", lang)}
+                className="w-full max-w-[8rem] rounded-xl border border-[#d8bf9a] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[#c2763a]/50"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const m = parseInt(floorMesaInput.trim(), 10);
+                  if (!Number.isFinite(m) || m < 1 || m > 99) {
+                    setFloorAssignError(staffT("errInvalidMesa", lang));
+                    return;
+                  }
+                  void postFloorMesa("join", m);
+                }}
+                className="rounded-full bg-[#3d291c] px-4 py-2 text-sm font-semibold text-[#f6ead3] hover:bg-[#2c1f14]"
+              >
+                {staffT("floorJoinBtn", lang)}
+              </button>
+            </div>
+          )}
           {floorAssignError ? (
             <p className="mt-2 text-xs font-medium text-red-800">{floorAssignError}</p>
           ) : null}
@@ -1157,9 +1579,7 @@ export function StaffBoard({
               {[...staffAssignments]
                 .sort((a, b) => a.mesa - b.mesa || a.staffName.localeCompare(b.staffName))
                 .map((a) => {
-                  const mine =
-                    staffName.trim().length > 0 &&
-                    a.staffName.trim().toLowerCase() === staffName.trim().toLowerCase();
+                  const mine = isFloorMine(a.staffName);
                   return (
                     <li
                       key={`${a.mesa}-${a.staffName}-${a.updatedAt}`}
@@ -1404,7 +1824,7 @@ export function StaffBoard({
         </div>
       ) : null}
 
-      {view === "historial" && hasSavedKey ? (
+      {variant === "default" && view === "historial" && hasSavedKey ? (
         <div className="rounded-2xl bg-[#fff9ec]/90 p-4 shadow-sm ring-1 ring-[#e2c9a0]">
           <h3 className="font-serif text-base font-semibold text-[#2c1f14]">
             {staffT("dayStaffReportTitle", lang)}
@@ -1666,6 +2086,8 @@ export function StaffBoard({
           })}
         </ul>
       )}
+        </>
+      ) : null}
     </div>
   );
 }

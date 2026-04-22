@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { jsonErrorFromException } from "@/lib/api-error-response";
+import { resolveStaffActorDisplayName } from "@/lib/employee-actor-server";
 import { joinStaffMesa, leaveStaffMesa, listStaffMesaAssignmentsFresh } from "@/lib/staff-mesa-store";
 import { getStaffProvidedKey } from "@/lib/staff-request";
 import { staffKeyMatches } from "@/lib/staff-auth";
@@ -40,7 +41,11 @@ export async function POST(req: Request) {
       : typeof b.mesa === "string"
         ? parseInt(b.mesa, 10)
         : NaN;
-  const staffName = typeof b.staffName === "string" ? b.staffName : "";
+  let staffName = typeof b.staffName === "string" ? b.staffName.trim() : "";
+  if (!staffName) {
+    const fromSession = await resolveStaffActorDisplayName();
+    if (fromSession) staffName = fromSession;
+  }
   if (!action) {
     return NextResponse.json({ error: "Acción no válida (join | leave)" }, { status: 400 });
   }

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { jsonErrorFromException } from "@/lib/api-error-response";
 import { isAllowedStaffStatusChange } from "@/lib/order-transitions";
 import { getOrder, updateOrderStatus } from "@/lib/orders-store";
+import { resolveStaffActorDisplayName } from "@/lib/employee-actor-server";
 import { getStaffProvidedKey } from "@/lib/staff-request";
 import { staffKeyMatches } from "@/lib/staff-auth";
 import type { OrderStatus } from "@/types/orders";
@@ -42,8 +43,12 @@ export async function PATCH(
     baseUpdatedAt?: unknown;
   };
   const status = bodyObj?.status;
-  const actorName =
+  let actorName =
     typeof bodyObj.actorName === "string" ? bodyObj.actorName.trim().slice(0, 80) : "";
+  if (!actorName) {
+    const fromSession = await resolveStaffActorDisplayName();
+    if (fromSession) actorName = fromSession;
+  }
   const baseUpdatedAt =
     typeof bodyObj.baseUpdatedAt === "string" ? bodyObj.baseUpdatedAt.trim() : undefined;
 
